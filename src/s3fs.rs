@@ -180,6 +180,7 @@ impl S3 for S3FS {
     ) -> S3Result<S3Response<CreateBucketOutput>> {
         let input = req.input;
 
+        info!("create bucket");
         if try_!(self.casfs.bucket_exists(&input.bucket)) {
             return Err(s3_error!(
                 BucketAlreadyExists,
@@ -587,10 +588,22 @@ impl S3 for S3FS {
             return Err(s3_error!(IncompleteBody));
         };
 
-        if !try_!(self.casfs.bucket_exists(&bucket)) {
-            return Err(s3_error!(NoSuchBucket, "Bucket does not exist"));
+        // if !try_!(self.casfs.bucket_exists(&bucket)) {
+        //     return Err(s3_error!(NoSuchBucket, "Bucket does not exist"));
+        // }
+        info!("check bucket");
+        match self.casfs.bucket_exists(&bucket) {
+            Ok(true) => {}
+            Ok(false) => {
+                info!("bucket {} does not exist", bucket);
+                return Err(s3_error!(NoSuchBucket, "Bucket does not exist"));
+            }
+            Err(e) => {
+                return Err(s3_error!(NoSuchBucket, ""));
+            }
         }
 
+        info!("convert stream error");
         // save the data
         let converted_stream = convert_stream_error(body);
         let byte_stream =
@@ -605,6 +618,7 @@ impl S3 for S3FS {
             e_tag: Some(obj_meta.format_e_tag()),
             ..Default::default()
         };
+        info!("PUT OBJECT FINISIHED");
         Ok(S3Response::new(output))
     }
 
