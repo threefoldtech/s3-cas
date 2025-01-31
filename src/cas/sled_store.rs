@@ -51,7 +51,7 @@ impl MetaStore for SledStore {
         Ok(Box::new(SledTree::new(tree)))
     }
 
-    fn get_bucket_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+    fn get_allbuckets_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError> {
         let tree = self.get_tree(BUCKET_META_TREE)?;
         Ok(Box::new(SledTree::new(tree)))
     }
@@ -201,7 +201,7 @@ impl MetaStore for SledStore {
         Ok(blocks_to_delete)
     }
 
-    fn write_meta_for_block(
+    fn write_block_and_path_meta(
         &self,
         block_map: Box<dyn BaseMetaTree>,
         path_map: Box<dyn BaseMetaTree>,
