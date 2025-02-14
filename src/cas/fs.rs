@@ -1,11 +1,16 @@
 use std::sync::Arc;
-use std::{io, mem, path::PathBuf};
+use std::{io, path::PathBuf};
 
 use super::{
-    block::BlockID, bucket_meta::BucketMeta, buffered_byte_stream::BufferedByteStream, fjall_store,
-    meta_errors::MetaError, meta_store, multipart::MultiPart, object::Object,
+    buffered_byte_stream::BufferedByteStream,
+    multipart::{MultiPart, MultiPartTree},
 };
 use crate::metrics::SharedMetrics;
+
+use crate::metastore::{
+    BaseMetaTree, BlockID, BlockTree, BucketMeta, BucketTreeExt, FjallStore, MetaError, MetaStore,
+    Object,
+};
 
 use faster_hex::hex_string;
 use futures::{
@@ -20,7 +25,6 @@ use rusoto_core::ByteStream;
 use tracing::error;
 
 pub const BLOCK_SIZE: usize = 1 << 20; // Supposedly 1 MiB
-pub const PTR_SIZE: usize = mem::size_of::<usize>(); // Size of a `usize` in bytes
 
 struct PendingMarker {
     metrics: SharedMetrics,
@@ -63,9 +67,10 @@ impl Drop for PendingMarker {
 
 #[derive(Debug)]
 pub struct CasFS {
-    meta_store: Box<dyn meta_store::MetaStore>,
+    meta_store: Box<dyn MetaStore>,
     root: PathBuf,
     metrics: SharedMetrics,
+    multipart_tree: Arc<MultiPartTree>,
 }
 
 pub enum StorageEngine {
@@ -81,37 +86,37 @@ impl CasFS {
     ) -> Self {
         meta_path.push("db");
         root.push("blocks");
-        let meta_store: Box<dyn meta_store::MetaStore> = match storage_engine {
-            StorageEngine::Fjall => Box::new(fjall_store::FjallStore::new(meta_path)),
+        let meta_store: Box<dyn MetaStore> = match storage_engine {
+            StorageEngine::Fjall => Box::new(FjallStore::new(meta_path)),
         };
 
         // Get the current amount of buckets
         //metrics.set_bucket_count(db.open_tree(BUCKET_META_TREE).unwrap().len());
+
+        let tree = meta_store.get_tree("_MULTIPART_PARTS").unwrap();
+        let multipart_tree = MultiPartTree::new(tree);
         Self {
             meta_store,
             root,
             metrics,
+            multipart_tree: Arc::new(multipart_tree),
         }
     }
 
-    fn path_tree(&self) -> Result<Box<dyn meta_store::BaseMetaTree>, MetaError> {
+    fn path_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError> {
         self.meta_store.get_path_tree()
     }
 
     pub fn get_bucket(
         &self,
         bucket_name: &str,
-    ) -> Result<Box<dyn meta_store::BucketTreeExt + Send + Sync>, MetaError> {
+    ) -> Result<Box<dyn BucketTreeExt + Send + Sync>, MetaError> {
         self.meta_store.get_bucket_ext(bucket_name)
     }
 
     /// Open the tree containing the block map.
-    pub fn block_tree(&self) -> Result<Box<dyn meta_store::BlockTree>, MetaError> {
+    pub fn block_tree(&self) -> Result<Box<dyn BlockTree>, MetaError> {
         self.meta_store.get_block_tree()
-    }
-
-    pub fn multipart_tree(&self) -> Result<Box<dyn meta_store::MultiPartTree>, MetaError> {
-        self.meta_store.get_multipart_tree()
     }
 
     /// Check if a bucket with a given name exists.
@@ -185,13 +190,13 @@ impl CasFS {
         hash: BlockID,
         blocks: Vec<BlockID>,
     ) -> Result<(), MetaError> {
-        let mp_map = self.multipart_tree()?;
+        let mp_map = self.multipart_tree.clone();
 
         let storage_key = self.part_key(&bucket, &key, &upload_id, part_number);
 
         let mp = MultiPart::new(size, part_number, bucket, key, upload_id, hash, blocks);
 
-        mp_map.insert(storage_key.as_bytes(), mp.to_vec())?;
+        mp_map.insert(storage_key.as_bytes(), mp)?;
         Ok(())
     }
 
@@ -202,7 +207,7 @@ impl CasFS {
         upload_id: &str,
         part_number: i64,
     ) -> Result<MultiPart, MetaError> {
-        let mp_map = self.multipart_tree()?;
+        let mp_map = self.multipart_tree.clone();
         let part_key = self.part_key(bucket, key, upload_id, part_number);
         mp_map.get_multipart_part(part_key.as_bytes())
     }
@@ -214,7 +219,7 @@ impl CasFS {
         upload_id: &str,
         part_number: i64,
     ) -> Result<(), MetaError> {
-        let mp_map = self.multipart_tree()?;
+        let mp_map = self.multipart_tree.clone();
         let part_key = self.part_key(bucket, key, upload_id, part_number);
         mp_map.remove(part_key.as_bytes())
     }
