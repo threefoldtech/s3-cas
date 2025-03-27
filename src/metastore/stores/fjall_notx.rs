@@ -6,8 +6,8 @@ use std::sync::Arc;
 use fjall;
 
 use crate::metastore::{
-    AllBucketsTree, BaseMetaTree, Block, BlockID, BlockTree, BucketMeta, BucketTreeExt, MetaError,
-    MetaStore, Object, Transaction, BLOCKID_SIZE,
+    AllBucketsTree, BLOCKID_SIZE, BaseMetaTree, Block, BlockID, BlockTree, BucketMeta,
+    BucketTreeExt, MetaError, MetaStore, Object, Transaction,
 };
 
 #[derive(Clone)]
@@ -159,7 +159,7 @@ impl MetaStore for FjallStoreNotx {
         Ok(Some(obj))
     }
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<Vec<Block>, MetaError> {
+    fn delete_object(&self, bucket: &str, key: &str) -> Result<Vec<BlockID>, MetaError> {
         let bucket = self.get_partition(bucket)?;
 
         let raw_object = match bucket.get(key) {
@@ -169,7 +169,7 @@ impl MetaStore for FjallStoreNotx {
         };
 
         let obj = Object::try_from(&*raw_object).expect("Malformed object");
-        let mut to_delete: Vec<Block> = Vec::with_capacity(obj.blocks().len());
+        let mut to_delete: Vec<BlockID> = Vec::with_capacity(obj.blocks().len());
 
         // delete the object in the database, we have it in memory to remove the
         // blocks as needed.
@@ -193,7 +193,7 @@ impl MetaStore for FjallStoreNotx {
                         self.block_partition
                             .remove(block_id)
                             .map_err(|e| MetaError::RemoveError(e.to_string()))?;
-                        to_delete.push(block);
+                        to_delete.push(*block_id);
                     } else {
                         block.decrement_refcount();
                         self.block_partition
@@ -206,8 +206,8 @@ impl MetaStore for FjallStoreNotx {
         Ok(to_delete)
     }
 
-    fn begin_transaction(&self) -> Box<dyn Transaction> {
-        Box::new(FjallNoTransaction::new(Arc::new(self.clone())))
+    fn begin_transaction(&self) -> Result<Box<dyn Transaction>, MetaError> {
+        Ok(Box::new(FjallNoTransaction::new(Arc::new(self.clone()))))
     }
 
     fn num_keys(&self) -> (usize, usize, usize) {

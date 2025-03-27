@@ -333,12 +333,19 @@ impl CasFS {
         let path_map = self.path_tree()?;
 
         // get blocks that safe to delete
-        let blocks_to_delete = self.meta_store.delete_object(bucket, key)?;
+        let block_ids = self.meta_store.delete_object(bucket, key)?;
 
         // Now
         // - delete all the blocks from disk
         // - and unlink them in the path map.
-        for block in blocks_to_delete {
+        for block_id in block_ids {
+            // Get the block from the block tree to access its path
+            let block_tree = self.meta_store.get_block_tree()?;
+            let block = match block_tree.get_block(&block_id)? {
+                Some(block) => block,
+                None => continue, // Skip if block not found
+            };
+
             async_fs::remove_file(block.disk_path(self.root.clone()))
                 .await
                 .expect("Could not delete file");
@@ -451,7 +458,16 @@ impl CasFS {
                 // 2. write the actual block to disk
                 //
                 // we commit the meta database transaction after writing the block to disk
-                let mut store_tx = self.meta_store.begin_transaction();
+                let mut store_tx = match self.meta_store.begin_transaction() {
+                    Ok(tx) => tx,
+                    Err(e) => {
+                        if let Err(send_err) = tx.send(Err(e.into())).await {
+                            error!("Could not send transaction error: {}", send_err);
+                        }
+                        return;
+                    }
+                };
+
                 let write_meta_result = store_tx.write_block(block_hash, data_len, key_has_block);
 
                 let mut pm = PendingMarker::new(self.metrics.clone());
@@ -467,7 +483,12 @@ impl CasFS {
                         // the block already exists, no need to write it to the storage
                         pm.block_ignored();
 
-                        Box::new(store_tx).commit().unwrap();
+                        if let Err(commit_err) = store_tx.commit() {
+                            if let Err(e) = tx.send(Err(commit_err.into())).await {
+                                error!("Could not send commit error: {}", e);
+                            }
+                            return;
+                        }
 
                         if let Err(e) = tx.send(Ok((idx, block_hash))).await {
                             error!("Could not send block id: {}", e);
@@ -481,7 +502,9 @@ impl CasFS {
                     }
                 };
 
-                let mut store_tx = Some(store_tx);
+                // Store transaction in an Option so we can take ownership when needed
+                let mut store_tx_opt = Some(store_tx);
+
                 // write the actual block to disk
                 // if the disk operation fails, the database transaction is rolled back.
                 let block_path = block.disk_path(self.root.clone());
@@ -490,8 +513,8 @@ impl CasFS {
                     .create_dir_all(block_path.parent().unwrap())
                     .await
                 {
-                    if let Some(store_tx) = store_tx.take() {
-                        Box::new(store_tx).rollback();
+                    if let Some(tx) = store_tx_opt.take() {
+                        tx.rollback();
                     }
 
                     if let Err(e) = tx.send(Err(e)).await {
@@ -501,8 +524,8 @@ impl CasFS {
                     }
                 }
                 if let Err(e) = self.async_fs.write(&block_path, &bytes).await {
-                    if let Some(store_tx) = store_tx.take() {
-                        Box::new(store_tx).rollback();
+                    if let Some(tx) = store_tx_opt.take() {
+                        tx.rollback();
                     }
 
                     if let Err(e) = tx.send(Err(e)).await {
@@ -513,8 +536,8 @@ impl CasFS {
                 }
 
                 // commit the database transaction
-                if let Some(store_tx) = store_tx.take() {
-                    if let Err(err) = Box::new(store_tx).commit() {
+                if let Some(store_tx) = store_tx_opt.take() {
+                    if let Err(err) = store_tx.commit() {
                         // TODO FIXME if the transaction fails, we need to delete the block from the storage
                         if let Err(e) = tx.send(Err(err.into())).await {
                             pm.block_write_error();
@@ -523,7 +546,6 @@ impl CasFS {
                         return;
                     }
                 }
-
                 pm.block_written(bytes.len());
 
                 if let Err(e) = tx.send(Ok((idx, block_hash))).await {
@@ -553,13 +575,10 @@ impl CasFS {
     ) -> Result<Object, MetaError> {
         let content_hash = Md5::digest(&data).into();
         let size = data.len() as u64;
-        let obj = self.create_object_meta(
-            bucket_name,
-            key,
-            size,
-            content_hash,
-            ObjectData::Inline { data },
-        )?;
+        let obj =
+            self.create_object_meta(bucket_name, key, size, content_hash, ObjectData::Inline {
+                data,
+            })?;
         Ok(obj)
     }
 }
@@ -794,8 +813,10 @@ mod tests {
 
         // Initial refcount must be 1
         let block_tree = fs.meta_store.get_block_tree().unwrap();
-        let stored_block = block_tree.get_block(&obj.blocks()[0]).unwrap().unwrap();
-        assert_eq!(stored_block.rc(), 1);
+        for id in obj.blocks() {
+            let block = block_tree.get_block(id).unwrap().unwrap();
+            assert_eq!(block.rc(), 1);
+        }
 
         {
             // Test using  the same key
@@ -856,9 +877,7 @@ mod tests {
 
         // Create test data and stream
         let test_data = b"test data".to_vec();
-        let stream = ByteStream::new(stream::once(
-            async move { Ok(Bytes::from(test_data.clone())) },
-        ));
+        let stream = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store object
         let obj = fs
@@ -928,9 +947,7 @@ mod tests {
         // Create test data
         let test_data = b"test data".to_vec();
         let test_data2 = test_data.clone();
-        let stream1 = ByteStream::new(stream::once(
-            async move { Ok(Bytes::from(test_data.clone())) },
-        ));
+        let stream1 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store first object
         let obj1 = fs
@@ -946,9 +963,7 @@ mod tests {
 
         // Store same data with different key
 
-        let stream2 = ByteStream::new(stream::once(
-            async move { Ok(Bytes::from(test_data2.clone())) },
-        ));
+        let stream2 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
 
         let obj2 = fs
             .store_single_object_and_meta(bucket, key2, stream2)
@@ -1009,9 +1024,7 @@ mod tests {
         // Create test data
         let test_data = b"test data".to_vec();
         let test_data2 = test_data.clone();
-        let stream1 = ByteStream::new(stream::once(
-            async move { Ok(Bytes::from(test_data.clone())) },
-        ));
+        let stream1 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store first object
         let obj1 = fs
@@ -1027,9 +1040,7 @@ mod tests {
 
         // Store same data with same key
 
-        let stream2 = ByteStream::new(stream::once(
-            async move { Ok(Bytes::from(test_data2.clone())) },
-        ));
+        let stream2 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
 
         let obj2 = fs
             .store_single_object_and_meta(bucket, key1, stream2)
@@ -1039,7 +1050,7 @@ mod tests {
         // Verify both objects share same blocks
         assert_eq!(obj1.blocks(), obj2.blocks());
         assert_eq!(obj1.hash(), obj2.hash());
-        // Verify blocks  exist with rc=2
+        // Verify blocks  exist with rc=1
         let block_tree = fs.meta_store.get_block_tree().unwrap();
         for id in obj2.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();

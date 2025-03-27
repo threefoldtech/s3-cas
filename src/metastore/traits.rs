@@ -1,8 +1,8 @@
 use super::{
+    MetaError,
     block::{Block, BlockID},
     bucket_meta::BucketMeta,
     object::Object,
-    MetaError,
 };
 
 use std::fmt::Debug;
@@ -10,79 +10,120 @@ use std::str::FromStr;
 
 /// MetaStore is the interface that defines the methods to interact with the metadata store.
 ///
-/// Current implementation of the bucket, block, path, and multipart trees are the same,
-/// the difference is only the partition/tree name.
-/// But we separate the API to make it easier to extend in the future,
-/// and give flexibility to the implementer to have different implementations for each tree.
+/// It provides methods for managing buckets, objects, and blocks in the metadata store.
+/// Implementations should ensure thread safety and proper error handling.
 pub trait MetaStore: Send + Sync + Debug + 'static {
-    // returns the maximum length of the data that can be inlined in the metadata object
+    /// Returns the maximum length of the data that can be inlined in the metadata object
     fn max_inlined_data_length(&self) -> usize;
 
-    /// returns tree which contains all the buckets.
+    /// Returns tree which contains all the buckets.
     /// This tree is used to store the bucket lists and provide
     /// the CRUD for the bucket list.
     fn get_allbuckets_tree(&self) -> Result<Box<dyn AllBucketsTree>, MetaError>;
 
-    /// get_bucket_ext returns the tree for specific bucket with the extended methods
-    /// we use this tree to provide additional methods for the bucket like the range and list methods.
+    /// Returns the tree for specific bucket with the extended methods
+    /// Used to provide additional methods for the bucket like the range and list methods.
     fn get_bucket_ext(&self, name: &str)
-        -> Result<Box<dyn BucketTreeExt + Send + Sync>, MetaError>;
+    -> Result<Box<dyn BucketTreeExt + Send + Sync>, MetaError>;
 
-    /// get_block_tree returns the block meta tree.
+    /// Returns the block meta tree.
     /// This tree is used to store the data block metadata.
     fn get_block_tree(&self) -> Result<Box<dyn BlockTree>, MetaError>;
 
-    /// get_tree returns the tree with the given name.
-    /// It is usually used if the app need to store some metadata for a specific purpose.
+    /// Returns the tree with the given name.
+    /// It is usually used if the app needs to store some metadata for a specific purpose.
     fn get_tree(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError>;
 
-    /// get_path_tree returns the path meta tree
+    /// Returns the path meta tree
     /// This tree is used to store the file path metadata.
     fn get_path_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError>;
 
-    /// bucket_exists returns true if the bucket exists.
+    /// Checks if a bucket with the given name exists.
     fn bucket_exists(&self, bucket_name: &str) -> Result<bool, MetaError>;
 
-    /// drop_bucket drops the bucket with the given name.
+    /// Drops the bucket with the given name.
     fn drop_bucket(&self, name: &str) -> Result<(), MetaError>;
 
-    /// insert_bucket inserts raw representation of the bucket into the meta store.
+    /// Inserts raw representation of the bucket into the meta store.
     fn insert_bucket(&self, bucket_name: &str, raw_bucket: Vec<u8>) -> Result<(), MetaError>;
 
-    /// Get a list of all buckets in the system.
+    /// Creates a new bucket with the given metadata.
+    ///
+    /// This method checks if the bucket already exists, and if not, creates it.
+    fn create_bucket(&self, bucket: &BucketMeta) -> Result<(), MetaError> {
+        // Default implementation that uses insert_bucket
+        if self.bucket_exists(bucket.name())? {
+            return Err(MetaError::BucketAlreadyExists(bucket.name().to_string()));
+        }
+        let raw_bucket = bucket.to_vec();
+        self.insert_bucket(bucket.name(), raw_bucket)?;
+        // Create the bucket tree
+        self.get_bucket_ext(bucket.name())?;
+        Ok(())
+    }
+
+    /// Gets a list of all buckets in the system.
     /// TODO: this should be paginated and return a stream.
     fn list_buckets(&self) -> Result<Vec<BucketMeta>, MetaError>;
 
-    /// insert_meta inserts a metadata Object into the bucket
+    /// Inserts a metadata Object into the bucket
     fn insert_meta(&self, bucket_name: &str, key: &str, raw_obj: Vec<u8>) -> Result<(), MetaError>;
 
-    /// get_meta returns the Object metadata for the given bucket and key.
-    /// We return the Object struct instead of the raw bytes for performance reason.
+    /// Gets the Object metadata for the given bucket and key.
     fn get_meta(&self, bucket_name: &str, key: &str) -> Result<Option<Object>, MetaError>;
 
-    /// delete object in a bucket for the given key.
+    /// Gets an object from the bucket with the given key.
+    ///
+    /// This is a convenience method that uses get_meta.
+    fn get_object(&self, bucket_name: &str, key: &str) -> Result<Option<Object>, MetaError> {
+        // Default implementation that uses get_meta
+        self.get_meta(bucket_name, key)
+    }
+
+    /// Puts an object into the bucket with the given key.
+    ///
+    /// This is a convenience method that uses insert_meta.
+    fn put_object(&self, bucket_name: &str, key: &str, obj: &Object) -> Result<(), MetaError> {
+        // Default implementation that uses insert_meta
+        self.insert_meta(bucket_name, key, obj.to_vec())
+    }
+
+    /// Deletes an object in a bucket for the given key.
     ///
     /// It should do at least the following:
     /// - get all the blocks from the object
     /// - decrements the refcount of all blocks, then removes blocks which are no longer referenced.
-    /// - and return the deleted blocks, so that the caller can remove the blocks from the storage.
+    /// - and return the deleted block IDs, so that the caller can remove the blocks from the storage.
+    fn delete_object(&self, bucket: &str, key: &str) -> Result<Vec<BlockID>, MetaError>;
+
+    /// Begins a new transaction.
     ///
-    /// TODO: all the above steps shouldn't be done in the meta storage layer.
-    ///       we do it there because we still couldn't abstract the DB transaction.
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<Vec<Block>, MetaError>;
+    /// Returns a Result containing either a boxed Transaction or an error.
+    fn begin_transaction(&self) -> Result<Box<dyn Transaction>, MetaError>;
 
-    fn begin_transaction(&self) -> Box<dyn Transaction>;
-
-    // returns the number of keys of the bucket, block, and path trees.
+    /// Returns the number of keys of the bucket, block, and path trees.
     fn num_keys(&self) -> (usize, usize, usize);
 
-    // returns the disk space used by the metadata store.
+    /// Returns the disk space used by the metadata store.
     fn disk_space(&self) -> u64;
 }
 
+/// Transaction represents a database transaction.
+///
+/// Transactions allow for atomic operations on the metadata store.
+/// They must be either committed or rolled back.
 pub trait Transaction: Send + Sync {
+    /// Commits the transaction, making all changes permanent.
     fn commit(self: Box<Self>) -> Result<(), MetaError>;
+
+    /// Rolls back the transaction, discarding all changes.
     fn rollback(self: Box<Self>);
+
+    /// Writes a block to the transaction.
+    ///
+    /// Returns a tuple containing:
+    /// - A boolean indicating whether the block was newly created
+    /// - The Block object
     fn write_block(
         &mut self,
         block_hash: BlockID,
@@ -91,35 +132,42 @@ pub trait Transaction: Send + Sync {
     ) -> Result<(bool, Block), MetaError>;
 }
 
+/// BaseMetaTree provides basic tree operations for metadata storage.
 pub trait BaseMetaTree: Send + Sync {
-    /// insert inserts a key value pair into the tree.
+    /// Inserts a key-value pair into the tree.
     fn insert(&self, key: &[u8], value: Vec<u8>) -> Result<(), MetaError>;
 
-    /// remove removes a key from the tree.
+    /// Removes a key from the tree.
     fn remove(&self, key: &[u8]) -> Result<(), MetaError>;
 
+    /// Checks if the tree contains the given key.
     fn contains_key(&self, key: &[u8]) -> Result<bool, MetaError>;
 
+    /// Gets the value associated with the given key.
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, MetaError>;
 }
 
+/// AllBucketsTree represents a tree that stores all buckets.
 pub trait AllBucketsTree: BaseMetaTree {}
 
 impl<T: BaseMetaTree> AllBucketsTree for T {}
 
+/// BlockTree provides operations for managing block metadata.
 pub trait BlockTree: Send + Sync {
-    /// get_block_obj returns the `Object` for the given key.
+    /// Gets the Block for the given key.
     fn get_block(&self, key: &[u8]) -> Result<Option<Block>, MetaError>;
 
     #[cfg(test)]
     fn len(&self) -> Result<usize, MetaError>;
 }
 
+/// BucketTreeExt provides extended operations for bucket trees.
 pub trait BucketTreeExt: BaseMetaTree {
-    // get all keys of the bucket
-    // TODO : make it paginated
+    /// Gets all keys of the bucket.
+    /// TODO: make it paginated
     fn get_bucket_keys(&self) -> Box<dyn Iterator<Item = Result<Vec<u8>, MetaError>> + Send>;
 
+    /// Filters objects in the bucket based on prefix, start_after, and continuation_token.
     fn range_filter<'a>(
         &'a self,
         start_after: Option<String>,

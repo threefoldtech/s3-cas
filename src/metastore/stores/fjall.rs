@@ -6,8 +6,8 @@ use std::sync::Arc;
 use fjall;
 
 use crate::metastore::{
-    AllBucketsTree, BaseMetaTree, Block, BlockID, BlockTree, BucketMeta, BucketTreeExt, Durability,
-    MetaError, MetaStore, Object, Transaction, BLOCKID_SIZE,
+    AllBucketsTree, BLOCKID_SIZE, BaseMetaTree, Block, BlockID, BlockTree, BucketMeta,
+    BucketTreeExt, Durability, MetaError, MetaStore, Object, Transaction,
 };
 
 #[derive(Clone)]
@@ -200,7 +200,7 @@ impl MetaStore for FjallStore {
         Ok(Some(obj))
     }
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<Vec<Block>, MetaError> {
+    fn delete_object(&self, bucket: &str, key: &str) -> Result<Vec<BlockID>, MetaError> {
         let bucket = self.get_partition(bucket)?;
 
         let raw_object = match bucket.get(key) {
@@ -210,7 +210,7 @@ impl MetaStore for FjallStore {
         };
 
         let obj = Object::try_from(&*raw_object).expect("Malformed object");
-        let mut to_delete: Vec<Block> = Vec::with_capacity(obj.blocks().len());
+        let mut to_delete: Vec<BlockID> = Vec::with_capacity(obj.blocks().len());
 
         let mut tx = self.keyspace.write_tx();
         // delete the object in the database, we have it in memory to remove the
@@ -231,7 +231,7 @@ impl MetaStore for FjallStore {
                     // path from disk.
                     if block.rc() == 1 {
                         tx.remove(&self.block_partition, block_id);
-                        to_delete.push(block);
+                        to_delete.push(*block_id);
                     } else {
                         block.decrement_refcount();
                         tx.insert(&self.block_partition, block_id, block.to_vec());
@@ -243,7 +243,7 @@ impl MetaStore for FjallStore {
         Ok(to_delete)
     }
 
-    fn begin_transaction(&self) -> Box<dyn Transaction> {
+    fn begin_transaction(&self) -> Result<Box<dyn Transaction>, MetaError> {
         // Use unsafe to extend lifetime to 'static since the transaction
         // won't outlive the store
         let tx = unsafe {
@@ -252,7 +252,7 @@ impl MetaStore for FjallStore {
             )
         };
 
-        Box::new(FjallTransaction::new(tx, Arc::new(self.clone())))
+        Ok(Box::new(FjallTransaction::new(tx, Arc::new(self.clone()))))
     }
 
     fn num_keys(&self) -> (usize, usize, usize) {

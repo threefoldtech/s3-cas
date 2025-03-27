@@ -10,13 +10,9 @@ pub enum FsError {
 
 impl Display for FsError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Cas FS error: {}",
-            match self {
-                FsError::MalformedObject => &"corrupt object",
-            }
-        )
+        write!(f, "Cas FS error: {}", match self {
+            FsError::MalformedObject => &"corrupt object",
+        })
     }
 }
 
@@ -35,6 +31,7 @@ pub enum MetaError {
     KeyAlreadyExists,
     CollectionNotFound,
     BucketNotFound,
+    BucketAlreadyExists(String),
     InsertError(String),
     RemoveError(String),
     NotMetaTree(String),
@@ -55,6 +52,7 @@ impl fmt::Display for MetaError {
             MetaError::KeyAlreadyExists => write!(f, "Key already exists"),
             MetaError::CollectionNotFound => write!(f, "Collection not found"),
             MetaError::BucketNotFound => write!(f, "Bucket not found"),
+            MetaError::BucketAlreadyExists(ref s) => write!(f, "Bucket already exists: {}", s),
             MetaError::InsertError(ref s) => write!(f, "Insert error: {}", s),
             MetaError::RemoveError(ref s) => write!(f, "Remove error: {}", s),
             MetaError::NotMetaTree(ref s) => write!(f, "Not a meta tree: {}", s),
