@@ -22,12 +22,17 @@ use s3s::dto::{
     ListBucketsOutput, ListObjectsInput, ListObjectsOutput, ListObjectsV2Input,
     ListObjectsV2Output, PutObjectInput, PutObjectOutput, UploadPartInput, UploadPartOutput,
 };
+
 use s3s::s3_error;
 use s3s::S3Result;
 use s3s::S3;
 use s3s::{S3Request, S3Response};
 
-use crate::cas::{block_stream::BlockStream, range_request::parse_range_request, CasFS};
+use crate::cas::{
+    block_stream::BlockStream,
+    range_request::{parse_range_request, RangeRequest},
+    CasFS,
+};
 use crate::metastore::{BlockID, ObjectData};
 use crate::metrics::SharedMetrics;
 
@@ -39,7 +44,6 @@ pub struct S3FS {
     metrics: SharedMetrics,
 }
 
-use crate::cas::range_request::RangeRequest;
 impl S3FS {
     pub fn new(casfs: CasFS, metrics: SharedMetrics) -> Self {
         // Get the current amount of buckets
@@ -744,5 +748,66 @@ fn decode_continuation_token(rt: Option<&str>) -> Result<Option<String>, s3s::S3
             .map_err(|_| s3_error!(InvalidToken, "continuation token is invalid"))
     } else {
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cas::mock_casfs::{CasFSTrait, MockCasFS};
+    use std::sync::Arc;
+
+    // Test that demonstrates how to mock CasFS for negative testing
+    #[tokio::test]
+    async fn test_mock_casfs_for_negative_testing() {
+        let _metrics = SharedMetrics::new();
+        let mock_casfs = Arc::new(MockCasFS::new());
+
+        // Initially, methods should succeed (not fail)
+        assert!(!*mock_casfs.get_object_paths_fails.lock().unwrap());
+        assert!(!*mock_casfs
+            .store_single_object_and_meta_fails
+            .lock()
+            .unwrap());
+
+        // Configure the mock to fail for specific methods
+        mock_casfs.set_method_fails("get_object_paths", true);
+        mock_casfs.set_method_fails("store_single_object_and_meta", true);
+
+        // Verify the methods are now set to fail
+        assert!(*mock_casfs.get_object_paths_fails.lock().unwrap());
+        assert!(*mock_casfs
+            .store_single_object_and_meta_fails
+            .lock()
+            .unwrap());
+
+        // Example of how you would use this in a real test:
+        // 1. Call a method that uses get_object_paths internally
+        let result = mock_casfs.get_object_paths("bucket", "key");
+
+        // 2. Verify it fails as expected
+        assert!(result.is_err());
+
+        // Example of testing an async method
+        let result = mock_casfs
+            .store_single_object_and_meta(
+                "bucket",
+                "key",
+                ByteStream::new(futures::stream::empty()),
+            )
+            .await;
+
+        // Verify the async method fails as expected
+        assert!(result.is_err());
+
+        // This demonstrates how you can use MockCasFS to test negative cases
+        // in your S3FS implementation
+    }
+
+    // Example of how to use MockCasFS with S3FS
+    #[tokio::test]
+    #[ignore] // This test is for demonstration purposes only and won't run
+    async fn test_s3fs_with_mock_casfs_example() {
+        let _metrics = SharedMetrics::new();
     }
 }
