@@ -1,5 +1,5 @@
-use std::fmt::Debug;
 use std::str::FromStr;
+use std::{fmt::Debug, sync::Arc};
 
 use super::{object::Object, MetaError, Transaction};
 
@@ -98,7 +98,7 @@ pub trait Store: Send + Sync + Debug + 'static {
     ///
     /// # Returns
     /// * `Result<Box<dyn BaseMetaTree>, MetaError>` - A boxed trait object implementing BaseMetaTree or an error
-    fn tree_open(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError>;
+    fn tree_open(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError>;
 
     /// Opens a tree with extended functionality.
     ///
@@ -107,7 +107,7 @@ pub trait Store: Send + Sync + Debug + 'static {
     ///
     /// # Returns
     /// * `Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError>` - A boxed trait object implementing MetaTreeExt or an error
-    fn tree_ext_open(&self, name: &str) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError>;
+    fn tree_ext_open(&self, name: &str) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError>;
 
     /// Checks if a tree with the given name exists.
     ///
@@ -183,7 +183,7 @@ impl FromStr for Durability {
             "buffer" => Ok(Durability::Buffer),
             "fsync" => Ok(Durability::Fsync),
             "fdatasync" => Ok(Durability::Fdatasync),
-            _ => Err(format!("Unknown durability option: {}", s)),
+            _ => Err(format!("Unknown durability option: {s}")),
         }
     }
 }

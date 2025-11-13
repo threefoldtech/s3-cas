@@ -622,36 +622,34 @@ impl S3 for S3FS {
 
         // if the content length is less than the max inlined data length, we store the object in the
         // metadata store, otherwise we store it in the cas layer.
-        if let Some(content_length) = content_length {
-            use futures::TryStreamExt;
-            if content_length <= self.casfs.max_inlined_data_length() as i64 {
-                // Collect stream into Vec<u8>
-                // it is safe to collect the stream into memory as the content length is
-                // considered small
-                let data: Vec<u8> = body
-                    .try_collect::<Vec<_>>()
-                    .await
-                    .map_err(|e| s3_error!(InternalError, "Failed to read body: {}", e))?
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                let obj_meta = try_!(self.casfs.store_inlined_object(&bucket, &key, data));
+        let content_length = content_length.unwrap_or_default() as usize;
+        use futures::TryStreamExt;
+        if content_length <= self.casfs.max_inlined_data_length() {
+            // Collect stream into Vec<u8>
+            // it is safe to collect the stream into memory as the content length is
+            // considered small
+            let data: Vec<u8> = body
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| s3_error!(InternalError, "Failed to read body: {}", e))?
+                .into_iter()
+                .flatten()
+                .collect();
+            let obj_meta = try_!(self.casfs.store_inlined_object(&bucket, &key, data));
 
-                let output = PutObjectOutput {
-                    e_tag: Some(obj_meta.format_e_tag()),
-                    ..Default::default()
-                };
-                return Ok(S3Response::new(output));
-            }
+            let output = PutObjectOutput {
+                e_tag: Some(obj_meta.format_e_tag()),
+                ..Default::default()
+            };
+            return Ok(S3Response::new(output));
         }
 
         // save the datadata
         let converted_stream = convert_stream_error(body);
-        let byte_stream =
-            ByteStream::new_with_size(converted_stream, content_length.unwrap() as usize);
+        let byte_stream = ByteStream::new_with_size(converted_stream, content_length);
         let obj_meta = try_!(
             self.casfs
-                .store_single_object_and_meta(&bucket, &key, byte_stream)
+                .store_single_object_and_meta(&bucket, &key, byte_stream, content_length)
                 .await
         );
 

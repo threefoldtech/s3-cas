@@ -70,8 +70,8 @@ use async_trait::async_trait;
 
 #[async_trait]
 trait AsyncFileSystem: Send + Sync + std::fmt::Debug {
-    async fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()>;
-    async fn write(&self, path: &std::path::Path, contents: &[u8]) -> std::io::Result<()>;
+    fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()>;
+    fn write(&self, path: &std::path::Path, contents: &[u8]) -> std::io::Result<()>;
 }
 
 #[derive(Debug)]
@@ -79,12 +79,12 @@ struct RealAsyncFs;
 
 #[async_trait]
 impl AsyncFileSystem for RealAsyncFs {
-    async fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()> {
-        async_fs::create_dir_all(path).await
+    fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(path)
     }
 
-    async fn write(&self, path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-        async_fs::write(path, contents).await
+    fn write(&self, path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+        std::fs::write(path, contents)
     }
 }
 
@@ -95,6 +95,7 @@ pub struct CasFS {
     root: PathBuf,
     metrics: SharedMetrics,
     multipart_tree: Arc<MultiPartTree>,
+    block_tree: BlockTree,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -114,7 +115,7 @@ impl FromStr for StorageEngine {
         match s.to_lowercase().as_str() {
             "fjall" => Ok(StorageEngine::Fjall),
             "fjall_notx" => Ok(StorageEngine::FjallNotx),
-            _ => Err(format!("Unknown storage engine: {}", s)),
+            _ => Err(format!("Unknown storage engine: {s}")),
         }
     }
 }
@@ -149,16 +150,18 @@ impl CasFS {
 
         let tree = meta_store.get_tree("_MULTIPART_PARTS").unwrap();
         let multipart_tree = MultiPartTree::new(tree);
+        let block_tree = meta_store.get_block_tree().expect("Can open block tree");
         Self {
             async_fs: Box::new(RealAsyncFs),
             meta_store,
             root,
             metrics,
             multipart_tree: Arc::new(multipart_tree),
+            block_tree,
         }
     }
 
-    fn path_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+    fn path_tree(&self) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
         self.meta_store.get_path_tree()
     }
 
@@ -173,13 +176,13 @@ impl CasFS {
     pub fn get_bucket(
         &self,
         bucket_name: &str,
-    ) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError> {
+    ) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
         self.meta_store.get_bucket_ext(bucket_name)
     }
 
     /// Open the tree containing the block map.
     pub fn block_tree(&self) -> Result<BlockTree, MetaError> {
-        self.meta_store.get_block_tree()
+        Ok(self.block_tree.clone())
     }
 
     /// Check if a bucket with a given name exists.
@@ -270,7 +273,7 @@ impl CasFS {
     }
 
     fn part_key(&self, bucket: &str, key: &str, upload_id: &str, part_number: i64) -> String {
-        format!("{}-{}-{}-{}", bucket, key, upload_id, part_number)
+        format!("{bucket}-{key}-{upload_id}-{part_number}")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -364,8 +367,14 @@ impl CasFS {
         bucket_name: &str,
         key: &str,
         data: ByteStream,
+        len: usize,
     ) -> io::Result<Object> {
-        let (blocks, content_hash, size) = self.store_object(bucket_name, key, data).await?;
+        let (blocks, content_hash, size) = if len > 0 {
+            self.store_object(bucket_name, key, data).await?
+        } else {
+            tracing::warn!(%key, "Skipping store for empty blob");
+            (Vec::new(), [0; 16], 0)
+        };
         let obj = self
             .create_object_meta(
                 bucket_name,
@@ -418,8 +427,8 @@ impl CasFS {
         })
         .zip(stream::repeat((tx, old_obj_meta)))
         .enumerate()
-        .for_each_concurrent(
-            5,
+        .for_each(
+            // 1,
             |(idx, (maybe_chunk, (mut tx, old_obj_meta)))| async move {
                 if let Err(e) = maybe_chunk {
                     if let Err(e) = tx
@@ -459,7 +468,7 @@ impl CasFS {
 
                 let block = match write_meta_result {
                     Err(e) => {
-                        if let Err(e) = tx.send(Err(e.into())).await {
+                        if let Err(e) = tx.unbounded_send(Err(e.into())) {
                             error!("Could not send transaction error: {}", e);
                         }
                         return;
@@ -470,7 +479,7 @@ impl CasFS {
 
                         Box::new(store_tx).commit().unwrap();
 
-                        if let Err(e) = tx.send(Ok((idx, block_hash))).await {
+                        if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
                             error!("Could not send block id: {}", e);
                         }
                         return;
@@ -486,27 +495,23 @@ impl CasFS {
                 // write the actual block to disk
                 // if the disk operation fails, the database transaction is rolled back.
                 let block_path = block.disk_path(self.root.clone());
-                if let Err(e) = self
-                    .async_fs
-                    .create_dir_all(block_path.parent().unwrap())
-                    .await
-                {
+                if let Err(e) = self.async_fs.create_dir_all(block_path.parent().unwrap()) {
                     if let Some(store_tx) = store_tx.take() {
                         Box::new(store_tx).rollback();
                     }
 
-                    if let Err(e) = tx.send(Err(e)).await {
+                    if let Err(e) = tx.unbounded_send(Err(e)) {
                         pm.block_write_error();
                         error!("Could not send path create error: {}", e);
                         return;
                     }
                 }
-                if let Err(e) = self.async_fs.write(&block_path, &bytes).await {
+                if let Err(e) = self.async_fs.write(&block_path, &bytes) {
                     if let Some(store_tx) = store_tx.take() {
                         Box::new(store_tx).rollback();
                     }
 
-                    if let Err(e) = tx.send(Err(e)).await {
+                    if let Err(e) = tx.unbounded_send(Err(e)) {
                         pm.block_write_error();
                         error!("Could not send block write error: {}", e);
                         return;
@@ -517,7 +522,7 @@ impl CasFS {
                 if let Some(store_tx) = store_tx.take() {
                     if let Err(err) = Box::new(store_tx).commit() {
                         // TODO FIXME if the transaction fails, we need to delete the block from the storage
-                        if let Err(e) = tx.send(Err(err.into())).await {
+                        if let Err(e) = tx.unbounded_send(Err(err.into())) {
                             pm.block_write_error();
                             error!("Could not send transaction error: {}", e);
                         }
@@ -527,7 +532,7 @@ impl CasFS {
 
                 pm.block_written(bytes.len());
 
-                if let Err(e) = tx.send(Ok((idx, block_hash))).await {
+                if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
                     error!("Could not send block id: {}", e);
                 }
             },

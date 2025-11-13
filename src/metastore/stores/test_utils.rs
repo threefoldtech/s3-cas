@@ -1,9 +1,10 @@
-use crate::metastore::{BaseMetaTree, BlockID, MetaTreeExt, MetaError, Object, ObjectData};
+use std::sync::Arc;
+
+use crate::metastore::{BaseMetaTree, BlockID, MetaError, MetaTreeExt, Object, ObjectData};
 
 pub trait TestStore {
-    fn tree_open(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError>;
-    fn get_bucket_ext(&self, name: &str)
-        -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError>;
+    fn tree_open(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError>;
+    fn get_bucket_ext(&self, name: &str) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError>;
 }
 
 pub fn test_get_bucket_keys(store: &impl TestStore) {
