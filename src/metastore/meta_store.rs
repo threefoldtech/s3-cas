@@ -62,7 +62,7 @@ impl MetaStore {
     ///
     /// # Returns
     /// A tree with extended functionality for bucket operations or an error
-    pub fn get_allbuckets_tree(&self) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError> {
+    pub fn get_allbuckets_tree(&self) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
         self.store.tree_ext_open(DEFAULT_BUCKET_TREE)
     }
 
@@ -78,7 +78,7 @@ impl MetaStore {
     pub fn get_bucket_ext(
         &self,
         name: &str,
-    ) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError> {
+    ) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
         self.store.tree_ext_open(name)
     }
 
@@ -104,7 +104,7 @@ impl MetaStore {
     ///
     /// # Returns
     /// A tree instance or an error
-    pub fn get_tree(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+    pub fn get_tree(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
         self.store.tree_open(name)
     }
 
@@ -114,7 +114,7 @@ impl MetaStore {
     ///
     /// # Returns
     /// A tree instance or an error
-    pub fn get_path_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+    pub fn get_path_tree(&self) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
         self.store.tree_open(DEFAULT_PATH_TREE)
     }
 
@@ -336,8 +336,15 @@ impl Debug for MetaStore {
 ///
 /// This struct wraps a BaseMetaTree and provides methods specific to block operations,
 /// such as retrieving and manipulating block metadata.
+#[derive(Clone)]
 pub struct BlockTree {
-    tree: Box<dyn BaseMetaTree>,
+    tree: Arc<dyn BaseMetaTree>,
+}
+
+impl Debug for BlockTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockTree").finish()
+    }
 }
 
 impl BlockTree {
