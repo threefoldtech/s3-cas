@@ -51,14 +51,14 @@ impl FjallStoreNotx {
 }
 
 impl Store for FjallStoreNotx {
-    fn tree_open(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+    fn tree_open(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
         let partition = self.get_partition(name)?;
-        Ok(Box::new(FjallTreeNotx::new(Arc::new(partition))))
+        Ok(Arc::new(FjallTreeNotx::new(Arc::new(partition))))
     }
 
-    fn tree_ext_open(&self, name: &str) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError> {
+    fn tree_ext_open(&self, name: &str) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
         let partition = self.get_partition(name)?;
-        Ok(Box::new(FjallTreeNotx::new(Arc::new(partition))))
+        Ok(Arc::new(FjallTreeNotx::new(Arc::new(partition))))
     }
 
     fn tree_exists(&self, name: &str) -> Result<bool, MetaError> {

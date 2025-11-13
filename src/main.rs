@@ -41,6 +41,27 @@ pub struct ServerConfig {
     #[arg(long, default_value = "9100")]
     metric_port: u16,
 
+    #[arg(long, help = "Enable HTTP browser interface")]
+    enable_http_ui: bool,
+
+    #[arg(long, default_value = "localhost")]
+    http_ui_host: String,
+
+    #[arg(long, default_value = "8080")]
+    http_ui_port: u16,
+
+    #[arg(
+        long,
+        help = "HTTP UI username (enables basic auth if set with --http-ui-password)"
+    )]
+    http_ui_username: Option<String>,
+
+    #[arg(
+        long,
+        help = "HTTP UI password (enables basic auth if set with --http-ui-username)"
+    )]
+    http_ui_password: Option<String>,
+
     #[arg(long, help = "leave empty to disable it")]
     inline_metadata_size: Option<usize>,
 
@@ -109,6 +130,7 @@ fn setup_tracing() {
 }
 
 fn main() -> Result<()> {
+    // console_subscriber::init();
     dotenv::dotenv().ok();
 
     setup_tracing();
@@ -121,11 +143,11 @@ fn main() -> Result<()> {
         } => match command {
             InspectCommand::NumKeys => {
                 let num_keys = num_keys(meta_root, metadata_db)?;
-                println!("Number of keys: {}", num_keys);
+                println!("Number of keys: {num_keys}");
             }
             InspectCommand::DiskSpace => {
                 let disk_space = disk_space(meta_root, metadata_db);
-                println!("Disk space: {}", disk_space);
+                println!("Disk space: {disk_space}");
             }
         },
         Command::Retrieve(config) => retrieve(config)?,
@@ -158,6 +180,34 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
     let s3fs = s3_cas::s3fs::S3FS::new(casfs, metrics.clone());
     let s3fs = s3_cas::metrics::MetricFs::new(s3fs, metrics.clone());
 
+    // HTTP UI service (if enabled)
+    let http_ui_service = if args.enable_http_ui {
+        let http_casfs = CasFS::new(
+            args.fs_root.clone(),
+            args.meta_root.clone(),
+            metrics.clone(),
+            storage_engine,
+            args.inline_metadata_size,
+            Some(args.durability),
+        );
+
+        let auth = match (args.http_ui_username, args.http_ui_password) {
+            (Some(username), Some(password)) => {
+                info!("HTTP UI basic auth enabled for user: {}", username);
+                Some(s3_cas::http_ui::BasicAuth::new(username, password))
+            }
+            _ => None,
+        };
+
+        Some(s3_cas::http_ui::HttpUiService::new(
+            http_casfs,
+            metrics.clone(),
+            auth,
+        ))
+    } else {
+        None
+    };
+
     // Setup S3 service
     let service = {
         let mut b = S3ServiceBuilder::new(s3fs);
@@ -185,6 +235,17 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
     let metrics_addr = metrics_listener.local_addr()?;
 
     info!("metrics server is running at http://{metrics_addr}");
+
+    // HTTP UI server (optional)
+    let http_ui_listener = if args.enable_http_ui {
+        let listener =
+            tokio::net::TcpListener::bind((args.http_ui_host.as_str(), args.http_ui_port)).await?;
+        let addr = listener.local_addr()?;
+        info!("HTTP UI server is running at http://{addr}");
+        Some(listener)
+    } else {
+        None
+    };
 
     let metrics_service = hyper::service::service_fn(
         move |req: hyper::Request<hyper::body::Incoming>| async move {
@@ -252,6 +313,34 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
                     Err(err) => {
                         tracing::error!("error accepting metrics connection: {err}");
                         continue;
+                    }
+                }
+            }
+            res = async {
+                match &http_ui_listener {
+                    Some(listener) => listener.accept().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(ref service) = http_ui_service {
+                    match res {
+                        Ok((socket, _)) => {
+                            let service_clone = service.clone();
+                            let http_ui_handler = hyper::service::service_fn(move |req| {
+                                let service = service_clone.clone();
+                                async move { service.handle_request(req).await }
+                            });
+                            let conn = http_server.serve_connection(TokioIo::new(socket), http_ui_handler);
+                            let conn = graceful.watch(conn.into_owned());
+                            tokio::spawn(async move {
+                                let _ = conn.await;
+                            });
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::error!("error accepting HTTP UI connection: {err}");
+                            continue;
+                        }
                     }
                 }
             }

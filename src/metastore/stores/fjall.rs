@@ -1,9 +1,10 @@
-use std::convert::TryFrom;
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::{convert::TryFrom, sync::Mutex};
 
-use fjall;
+use fjall::{self, Partition, TxPartitionHandle};
 
 use crate::metastore::{
     BaseMetaTree, Durability, KeyValuePairs, MetaError, MetaTreeExt, Object, Store, Transaction,
@@ -15,6 +16,7 @@ pub struct FjallStore {
     keyspace: Arc<fjall::TxKeyspace>,
     inlined_metadata_size: usize,
     durability: fjall::PersistMode,
+    partition_cache: Arc<Mutex<HashMap<String, TxPartitionHandle>>>,
 }
 
 impl std::fmt::Debug for FjallStore {
@@ -49,14 +51,26 @@ impl FjallStore {
             keyspace: Arc::new(tx_keyspace),
             inlined_metadata_size,
             durability,
+            partition_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     fn get_partition(&self, name: &str) -> Result<fjall::TxPartitionHandle, MetaError> {
-        match self.keyspace.open_partition(name, Default::default()) {
-            Ok(partition) => Ok(partition),
-            Err(e) => Err(MetaError::OtherDBError(e.to_string())),
-        }
+        Ok(self
+            .partition_cache
+            .lock()
+            .expect("Can lock partition cache")
+            .entry(name.to_string())
+            .or_insert(
+                // match self.keyspace.open_partition(name, Default::default()) {
+                //     Ok(partition) => Ok(partition),
+                //     Err(e) => Err(MetaError::OtherDBError(e.to_string())),
+                // },
+                self.keyspace
+                    .open_partition(name, Default::default())
+                    .expect("Can open parition"),
+            )
+            .clone())
     }
 
     fn commit_persist(&self, tx: fjall::WriteTransaction) -> Result<(), MetaError> {
@@ -75,17 +89,17 @@ impl FjallStore {
 }
 
 impl Store for FjallStore {
-    fn tree_open(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+    fn tree_open(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
         let partition = self.get_partition(name)?;
-        Ok(Box::new(FjallTree::new(
+        Ok(Arc::new(FjallTree::new(
             self.keyspace.clone(),
             Arc::new(partition),
         )))
     }
 
-    fn tree_ext_open(&self, name: &str) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError> {
+    fn tree_ext_open(&self, name: &str) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
         let partition = self.get_partition(name)?;
-        Ok(Box::new(FjallTree::new(
+        Ok(Arc::new(FjallTree::new(
             self.keyspace.clone(),
             Arc::new(partition),
         )))
@@ -358,14 +372,14 @@ mod tests {
     }
 
     impl test_utils::TestStore for FjallStore {
-        fn tree_open(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+        fn tree_open(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
             <FjallStore as Store>::tree_open(self, name)
         }
 
         fn get_bucket_ext(
             &self,
             name: &str,
-        ) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError> {
+        ) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
             <FjallStore as Store>::tree_ext_open(self, name)
         }
     }

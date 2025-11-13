@@ -3,6 +3,7 @@ mod internal_macros;
 
 pub mod cas;
 pub mod check;
+pub mod http_ui;
 pub mod inspect;
 pub mod metastore;
 pub mod metrics;
