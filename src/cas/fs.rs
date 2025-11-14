@@ -169,6 +169,7 @@ impl CasFS {
     /// * `user_meta_path` - Path to user-specific metadata DB
     /// * `shared_block_tree` - Shared block tree (from SharedBlockStore)
     /// * `shared_path_tree` - Shared path tree (from SharedBlockStore)
+    /// * `shared_multipart_tree` - Shared multipart tree (from SharedBlockStore)
     /// * `metrics` - Metrics collector
     /// * `storage_engine` - Storage engine for user metadata
     /// * `inlined_metadata_size` - Maximum size for inlined metadata
@@ -178,6 +179,7 @@ impl CasFS {
         mut user_meta_path: PathBuf,
         shared_block_tree: Arc<BlockTree>,
         shared_path_tree: Arc<dyn BaseMetaTree>,
+        shared_multipart_tree: Arc<MultiPartTree>,
         metrics: SharedMetrics,
         storage_engine: StorageEngine,
         inlined_metadata_size: Option<usize>,
@@ -197,15 +199,12 @@ impl CasFS {
             }
         };
 
-        let tree = user_meta_store.get_tree("_MULTIPART_PARTS").unwrap();
-        let multipart_tree = MultiPartTree::new(tree);
-
         Self {
             async_fs: Box::new(RealAsyncFs),
             user_meta_store,
             root,
             metrics,
-            multipart_tree: Arc::new(multipart_tree),
+            multipart_tree: shared_multipart_tree,
             block_tree: shared_block_tree,
             shared_path_tree: Some(shared_path_tree),
         }
