@@ -1,0 +1,10 @@
+# Example users configuration for multi-user mode
+# Usage: s3-cas server --users-config users.toml ...
+
+[users.alice]
+access_key = "AKIA_ALICE_123"
+secret_key = "secret_key_alice_456789"
+
+[users.bob]
+access_key = "AKIA_BOB_789"
+secret_key = "secret_key_bob_123456"
