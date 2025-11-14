@@ -88,14 +88,14 @@ impl AsyncFileSystem for RealAsyncFs {
     }
 }
 
-#[derive(Debug)]
 pub struct CasFS {
     async_fs: Box<dyn AsyncFileSystem>,
-    meta_store: MetaStore,
+    user_meta_store: MetaStore,
     root: PathBuf,
     metrics: SharedMetrics,
     multipart_tree: Arc<MultiPartTree>,
-    block_tree: BlockTree,
+    block_tree: Arc<BlockTree>,
+    shared_path_tree: Option<Arc<dyn BaseMetaTree>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -153,16 +153,69 @@ impl CasFS {
         let block_tree = meta_store.get_block_tree().expect("Can open block tree");
         Self {
             async_fs: Box::new(RealAsyncFs),
-            meta_store,
+            user_meta_store: meta_store,
             root,
             metrics,
             multipart_tree: Arc::new(multipart_tree),
-            block_tree,
+            block_tree: Arc::new(block_tree),
+            shared_path_tree: None, // Single-user mode
+        }
+    }
+
+    /// Create a new CasFS instance for multi-user mode
+    ///
+    /// # Arguments
+    /// * `root` - Root directory for block storage (shared across all users)
+    /// * `user_meta_path` - Path to user-specific metadata DB
+    /// * `shared_block_tree` - Shared block tree (from SharedBlockStore)
+    /// * `shared_path_tree` - Shared path tree (from SharedBlockStore)
+    /// * `metrics` - Metrics collector
+    /// * `storage_engine` - Storage engine for user metadata
+    /// * `inlined_metadata_size` - Maximum size for inlined metadata
+    /// * `durability` - Durability level for user metadata transactions
+    pub fn new_multi_user(
+        mut root: PathBuf,
+        mut user_meta_path: PathBuf,
+        shared_block_tree: Arc<BlockTree>,
+        shared_path_tree: Arc<dyn BaseMetaTree>,
+        metrics: SharedMetrics,
+        storage_engine: StorageEngine,
+        inlined_metadata_size: Option<usize>,
+        durability: Option<Durability>,
+    ) -> Self {
+        user_meta_path.push("db");
+        root.push("blocks");
+
+        let user_meta_store = match storage_engine {
+            StorageEngine::Fjall => {
+                let store = FjallStore::new(user_meta_path, inlined_metadata_size, durability);
+                MetaStore::new(store, inlined_metadata_size)
+            }
+            StorageEngine::FjallNotx => {
+                let store = FjallStoreNotx::new(user_meta_path, inlined_metadata_size);
+                MetaStore::new(store, inlined_metadata_size)
+            }
+        };
+
+        let tree = user_meta_store.get_tree("_MULTIPART_PARTS").unwrap();
+        let multipart_tree = MultiPartTree::new(tree);
+
+        Self {
+            async_fs: Box::new(RealAsyncFs),
+            user_meta_store,
+            root,
+            metrics,
+            multipart_tree: Arc::new(multipart_tree),
+            block_tree: shared_block_tree,
+            shared_path_tree: Some(shared_path_tree),
         }
     }
 
     fn path_tree(&self) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
-        self.meta_store.get_path_tree()
+        match &self.shared_path_tree {
+            Some(tree) => Ok(Arc::clone(tree)),
+            None => self.user_meta_store.get_path_tree(),
+        }
     }
 
     pub fn fs_root(&self) -> &PathBuf {
@@ -170,24 +223,24 @@ impl CasFS {
     }
 
     pub fn max_inlined_data_length(&self) -> usize {
-        self.meta_store.max_inlined_data_length()
+        self.user_meta_store.max_inlined_data_length()
     }
 
     pub fn get_bucket(
         &self,
         bucket_name: &str,
     ) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
-        self.meta_store.get_bucket_ext(bucket_name)
+        self.user_meta_store.get_bucket_ext(bucket_name)
     }
 
     /// Open the tree containing the block map.
-    pub fn block_tree(&self) -> Result<BlockTree, MetaError> {
-        Ok(self.block_tree.clone())
+    pub fn block_tree(&self) -> Result<Arc<BlockTree>, MetaError> {
+        Ok(Arc::clone(&self.block_tree))
     }
 
     /// Check if a bucket with a given name exists.
     pub fn bucket_exists(&self, bucket_name: &str) -> Result<bool, MetaError> {
-        self.meta_store.bucket_exists(bucket_name)
+        self.user_meta_store.bucket_exists(bucket_name)
     }
 
     // create a meta object and insert it into the database
@@ -200,7 +253,7 @@ impl CasFS {
         object_data: ObjectData,
     ) -> Result<Object, MetaError> {
         let obj_meta = Object::new(size, hash, object_data);
-        self.meta_store
+        self.user_meta_store
             .insert_meta(bucket_name, key, obj_meta.to_vec())?;
         Ok(obj_meta)
     }
@@ -211,7 +264,7 @@ impl CasFS {
         bucket_name: &str,
         key: &str,
     ) -> Result<Option<Object>, MetaError> {
-        self.meta_store.get_meta(bucket_name, key)
+        self.user_meta_store.get_meta(bucket_name, key)
     }
 
     pub fn get_object_paths(
@@ -246,18 +299,18 @@ impl CasFS {
     // create and insert a new  bucket
     pub fn create_bucket(&self, bucket_name: &str) -> Result<(), MetaError> {
         let bm = BucketMeta::new(bucket_name.to_string());
-        self.meta_store.insert_bucket(bucket_name, bm.to_vec())
+        self.user_meta_store.insert_bucket(bucket_name, bm.to_vec())
     }
 
     /// Remove a bucket and its associated metadata.
     // TODO: this is very much not optimal
     pub async fn bucket_delete(&self, bucket_name: &str) -> Result<(), MetaError> {
         // remove from the bucket list tree/partition
-        let bmt = self.meta_store.get_allbuckets_tree()?;
+        let bmt = self.user_meta_store.get_allbuckets_tree()?;
         bmt.remove(bucket_name.as_bytes())?;
 
         // removes all objects in the bucket
-        let bucket = self.meta_store.get_bucket_ext(bucket_name)?;
+        let bucket = self.user_meta_store.get_bucket_ext(bucket_name)?;
         for key_val in bucket.iter_all() {
             let (key, _) = key_val?;
             self.delete_object(
@@ -268,7 +321,7 @@ impl CasFS {
         }
 
         // remove the bucket tree/partition itself
-        self.meta_store.drop_bucket(bucket_name)?;
+        self.user_meta_store.drop_bucket(bucket_name)?;
         Ok(())
     }
 
@@ -328,7 +381,7 @@ impl CasFS {
 
     /// Get a list of all buckets in the system.
     pub fn list_buckets(&self) -> Result<Vec<BucketMeta>, MetaError> {
-        self.meta_store.list_buckets()
+        self.user_meta_store.list_buckets()
     }
 
     /// Delete an object from a bucket.
@@ -337,7 +390,7 @@ impl CasFS {
         let path_map = self.path_tree()?;
 
         // get blocks that safe to delete
-        let blocks_to_delete = self.meta_store.delete_object(bucket, key)?;
+        let blocks_to_delete = self.user_meta_store.delete_object(bucket, key)?;
 
         // Now
         // - delete all the blocks from disk
@@ -461,7 +514,7 @@ impl CasFS {
                 // 2. write the actual block to disk
                 //
                 // we commit the meta database transaction after writing the block to disk
-                let mut store_tx = self.meta_store.begin_transaction();
+                let mut store_tx = self.user_meta_store.begin_transaction();
                 let write_meta_result = store_tx.write_block(block_hash, data_len, key_has_block);
 
                 let mut pm = PendingMarker::new(self.metrics.clone());
@@ -675,7 +728,7 @@ mod tests {
 
         // Verify no blocks were stored in metadata
         // the block must be rolled back
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         assert_eq!(block_tree.len().unwrap(), 0);
 
         // Verify object metadata was not created
@@ -715,7 +768,7 @@ mod tests {
         assert_eq!(obj.blocks().len(), 1);
 
         // Verify block & path was stored
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         assert!(block_tree.len().unwrap() > 0);
         let stored_block = block_tree.get_block(&obj.blocks()[0]).unwrap().unwrap();
         assert_eq!(stored_block.size(), test_data_len);
@@ -799,7 +852,7 @@ mod tests {
             .unwrap();
 
         // Initial refcount must be 1
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         for id in obj.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
             assert_eq!(block.rc(), 1);
@@ -877,7 +930,7 @@ mod tests {
         assert_eq!(exists, true);
 
         // verify blocks and path exist
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         let mut stored_paths = Vec::new();
         for id in obj.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
@@ -896,7 +949,7 @@ mod tests {
         assert_eq!(exists, false);
 
         // Verify blocks were cleaned up
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         for id in obj.blocks() {
             assert!(block_tree.get_block(id).unwrap().is_none());
         }
@@ -942,7 +995,7 @@ mod tests {
             .await
             .unwrap();
         // Verify blocks  exist with rc=1
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         for id in obj1.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
             assert_eq!(block.rc(), 1);
@@ -961,7 +1014,7 @@ mod tests {
         assert_eq!(obj1.blocks(), obj2.blocks());
         assert_eq!(obj1.hash(), obj2.hash());
         // Verify blocks  exist with rc=2
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         for id in obj2.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
             assert_eq!(block.rc(), 2);
@@ -971,7 +1024,7 @@ mod tests {
         fs.delete_object(bucket, key1).await.unwrap();
 
         // Verify blocks still exist
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         for id in obj1.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
             assert_eq!(block.rc(), 1);
@@ -1019,7 +1072,7 @@ mod tests {
             .await
             .unwrap();
         // Verify blocks  exist with rc=1
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         for id in obj1.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
             assert_eq!(block.rc(), 1);
@@ -1038,7 +1091,7 @@ mod tests {
         assert_eq!(obj1.blocks(), obj2.blocks());
         assert_eq!(obj1.hash(), obj2.hash());
         // Verify blocks  exist with rc=1
-        let block_tree = fs.meta_store.get_block_tree().unwrap();
+        let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         for id in obj2.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
             assert_eq!(block.rc(), 1);

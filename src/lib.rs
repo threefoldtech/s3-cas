@@ -1,6 +1,7 @@
 #[macro_use]
 mod internal_macros;
 
+pub mod auth;
 pub mod cas;
 pub mod check;
 pub mod http_ui;

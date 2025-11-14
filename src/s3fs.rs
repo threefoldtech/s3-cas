@@ -33,7 +33,6 @@ use crate::metrics::SharedMetrics;
 
 const MAX_KEYS: i32 = 1000;
 
-#[derive(Debug)]
 pub struct S3FS {
     casfs: CasFS,
     metrics: SharedMetrics,
