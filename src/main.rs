@@ -84,6 +84,12 @@ pub struct ServerConfig {
         help = "Durability level (buffer, fsync, fdatasync)"
     )]
     durability: Durability,
+
+    #[arg(
+        long,
+        help = "Path to users.toml config file (enables multi-user mode)"
+    )]
+    users_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -166,9 +172,25 @@ use s3s::service::S3ServiceBuilder;
 #[tokio::main]
 async fn run(args: ServerConfig) -> anyhow::Result<()> {
     let storage_engine = args.metadata_db;
-
-    // provider
     let metrics = s3_cas::metrics::SharedMetrics::new();
+
+    // Check if multi-user mode is enabled
+    let users_config_path = args.users_config.clone();
+    if let Some(users_config_path) = users_config_path {
+        info!("Multi-user mode enabled, loading users from {:?}", users_config_path);
+        run_multi_user(args, storage_engine, metrics, users_config_path).await
+    } else {
+        info!("Single-user mode");
+        run_single_user(args, storage_engine, metrics).await
+    }
+}
+
+async fn run_single_user(
+    args: ServerConfig,
+    storage_engine: s3_cas::cas::StorageEngine,
+    metrics: s3_cas::metrics::SharedMetrics,
+) -> anyhow::Result<()> {
+    // Original single-user implementation
     let casfs = CasFS::new(
         args.fs_root.clone(),
         args.meta_root.clone(),
@@ -191,7 +213,9 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
             Some(args.durability),
         );
 
-        let auth = match (args.http_ui_username, args.http_ui_password) {
+        let http_ui_username = args.http_ui_username.clone();
+        let http_ui_password = args.http_ui_password.clone();
+        let auth = match (http_ui_username, http_ui_password) {
             (Some(username), Some(password)) => {
                 info!("HTTP UI basic auth enabled for user: {}", username);
                 Some(s3_cas::http_ui::BasicAuth::new(username, password))
@@ -213,13 +237,130 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
         let mut b = S3ServiceBuilder::new(s3fs);
 
         // Enable authentication
-        if let (Some(ak), Some(sk)) = (args.access_key, args.secret_key) {
+        let access_key = args.access_key.clone();
+        let secret_key = args.secret_key.clone();
+        if let (Some(ak), Some(sk)) = (access_key, secret_key) {
             b.set_auth(s3s::auth::SimpleAuth::from_single(ak, sk));
             info!("authentication is enabled");
         }
 
         b.build()
     };
+
+    run_server(args, service, http_ui_service, metrics).await
+}
+
+async fn run_multi_user(
+    args: ServerConfig,
+    storage_engine: s3_cas::cas::StorageEngine,
+    metrics: s3_cas::metrics::SharedMetrics,
+    users_config_path: PathBuf,
+) -> anyhow::Result<()> {
+    use s3_cas::auth::{UsersConfig, UserRouter};
+    use s3_cas::cas::SharedBlockStore;
+
+    // Load users configuration
+    let users_config = UsersConfig::load_from_file(&users_config_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load users config: {}", e))?;
+
+    info!("Loaded {} users from config", users_config.users.len());
+
+    // Create shared block store
+    let shared_block_store = SharedBlockStore::new(
+        args.meta_root.join("blocks"),
+        storage_engine,
+        args.inline_metadata_size,
+        Some(args.durability),
+    )?;
+
+    // Create user router with pre-created CasFS instances
+    // NOTE: Not used in Phase 1 - we create CasFS instances directly below
+    let _user_router = UserRouter::new(
+        users_config.clone(),
+        &shared_block_store,
+        args.fs_root.clone(),
+        args.meta_root.clone(),
+        metrics.clone(),
+        storage_engine,
+        args.inline_metadata_size,
+        Some(args.durability),
+    );
+
+    // Build S3 auth from user config
+    let mut auth_builder = s3s::auth::SimpleAuth::new();
+    for (user_id, user) in &users_config.users {
+        auth_builder.register(user.access_key.clone(), user.secret_key.clone().into());
+        info!("Registered user: {}", user_id);
+    }
+
+    // TEMPORARY: Create a CasFS instance for the first user for S3 service
+    // TODO: Proper per-request routing would require a custom S3 trait implementation
+    let first_user_id = users_config.users.keys().next()
+        .ok_or_else(|| anyhow::anyhow!("No users configured"))?;
+
+    let s3_casfs = CasFS::new_multi_user(
+        args.fs_root.clone(),
+        args.meta_root.join(format!("user_{}", first_user_id)),
+        shared_block_store.block_tree(),
+        shared_block_store.path_tree(),
+        metrics.clone(),
+        storage_engine,
+        args.inline_metadata_size,
+        Some(args.durability),
+    );
+
+    let s3fs = s3_cas::s3fs::S3FS::new(s3_casfs, metrics.clone());
+    let s3fs = s3_cas::metrics::MetricFs::new(s3fs, metrics.clone());
+
+    // HTTP UI service (if enabled) - use first user for now
+    let http_ui_service = if args.enable_http_ui {
+        let http_casfs = CasFS::new_multi_user(
+            args.fs_root.clone(),
+            args.meta_root.join(format!("user_{}", first_user_id)),
+            shared_block_store.block_tree(),
+            shared_block_store.path_tree(),
+            metrics.clone(),
+            storage_engine,
+            args.inline_metadata_size,
+            Some(args.durability),
+        );
+
+        let http_ui_username = args.http_ui_username.clone();
+        let http_ui_password = args.http_ui_password.clone();
+        let auth = match (http_ui_username, http_ui_password) {
+            (Some(username), Some(password)) => {
+                info!("HTTP UI basic auth enabled for user: {}", username);
+                Some(s3_cas::http_ui::BasicAuth::new(username, password))
+            }
+            _ => None,
+        };
+
+        Some(s3_cas::http_ui::HttpUiService::new(
+            http_casfs,
+            metrics.clone(),
+            auth,
+        ))
+    } else {
+        None
+    };
+
+    // Setup S3 service with multi-user auth
+    let service = {
+        let mut b = S3ServiceBuilder::new(s3fs);
+        b.set_auth(auth_builder);
+        info!("Multi-user authentication enabled");
+        b.build()
+    };
+
+    run_server(args, service, http_ui_service, metrics).await
+}
+
+async fn run_server(
+    args: ServerConfig,
+    service: s3s::service::S3Service,
+    http_ui_service: Option<s3_cas::http_ui::HttpUiService>,
+    _metrics: s3_cas::metrics::SharedMetrics,
+) -> anyhow::Result<()> {
 
     // Run server
     // S3 listener
