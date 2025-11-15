@@ -40,6 +40,14 @@ impl SharedBlockStore {
                 MetaStore::new(store, inlined_metadata_size)
             }
             StorageEngine::FjallNotx => {
+                tracing::warn!(
+                    "Using fjall_notx for shared block metadata in multi-user mode. \
+                     Note: fjall_notx has weaker consistency guarantees: \
+                     (1) transactions are not atomic - blocks visible before commit, \
+                     (2) rollback uses best-effort cleanup, not true rollback, \
+                     (3) durability parameter is ignored. \
+                     For production multi-user deployments, consider using 'fjall' instead."
+                );
                 let store = FjallStoreNotx::new(path, inlined_metadata_size);
                 MetaStore::new(store, inlined_metadata_size)
             }
