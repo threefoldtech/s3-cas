@@ -67,6 +67,7 @@ impl UserRouter {
                 shared_block_store.block_tree(),
                 shared_block_store.path_tree(),
                 shared_block_store.multipart_tree(),
+                shared_block_store.meta_store(),
                 metrics.clone(),
                 storage_engine,
                 inlined_metadata_size,

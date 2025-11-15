@@ -96,6 +96,7 @@ pub struct CasFS {
     multipart_tree: Arc<MultiPartTree>,
     block_tree: Arc<BlockTree>,
     shared_path_tree: Option<Arc<dyn BaseMetaTree>>,
+    shared_meta_store: Option<Arc<MetaStore>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -159,6 +160,7 @@ impl CasFS {
             multipart_tree: Arc::new(multipart_tree),
             block_tree: Arc::new(block_tree),
             shared_path_tree: None, // Single-user mode
+            shared_meta_store: None, // Single-user mode
         }
     }
 
@@ -170,6 +172,7 @@ impl CasFS {
     /// * `shared_block_tree` - Shared block tree (from SharedBlockStore)
     /// * `shared_path_tree` - Shared path tree (from SharedBlockStore)
     /// * `shared_multipart_tree` - Shared multipart tree (from SharedBlockStore)
+    /// * `shared_meta_store` - Shared meta store for transactions (from SharedBlockStore)
     /// * `metrics` - Metrics collector
     /// * `storage_engine` - Storage engine for user metadata
     /// * `inlined_metadata_size` - Maximum size for inlined metadata
@@ -180,6 +183,7 @@ impl CasFS {
         shared_block_tree: Arc<BlockTree>,
         shared_path_tree: Arc<dyn BaseMetaTree>,
         shared_multipart_tree: Arc<MultiPartTree>,
+        shared_meta_store: Arc<MetaStore>,
         metrics: SharedMetrics,
         storage_engine: StorageEngine,
         inlined_metadata_size: Option<usize>,
@@ -207,6 +211,7 @@ impl CasFS {
             multipart_tree: shared_multipart_tree,
             block_tree: shared_block_tree,
             shared_path_tree: Some(shared_path_tree),
+            shared_meta_store: Some(shared_meta_store),
         }
     }
 
@@ -542,7 +547,13 @@ impl CasFS {
                 // 2. write the actual block to disk
                 //
                 // we commit the meta database transaction after writing the block to disk
-                let mut store_tx = self.user_meta_store.begin_transaction();
+                //
+                // IMPORTANT: In multi-user mode, use shared MetaStore for block transactions
+                // to ensure blocks are written to the shared _BLOCKS tree, not user-specific tree
+                let mut store_tx = match &self.shared_meta_store {
+                    Some(shared_store) => shared_store.begin_transaction(),
+                    None => self.user_meta_store.begin_transaction(),
+                };
                 let write_meta_result = store_tx.write_block(block_hash, data_len, key_has_block);
 
                 let mut pm = PendingMarker::new(self.metrics.clone());

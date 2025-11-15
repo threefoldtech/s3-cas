@@ -72,4 +72,10 @@ impl SharedBlockStore {
     pub fn multipart_tree(&self) -> Arc<MultiPartTree> {
         Arc::clone(&self.multipart_tree)
     }
+
+    /// Get a reference to the shared meta store
+    /// This is used for creating transactions that write to shared metadata
+    pub fn meta_store(&self) -> Arc<MetaStore> {
+        Arc::clone(&self.meta_store)
+    }
 }
