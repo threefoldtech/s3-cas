@@ -343,6 +343,13 @@ impl CasFS {
 
         let storage_key = self.part_key(&bucket, &key, &upload_id, part_number);
 
+        tracing::info!(
+            "CasFS: insert_multipart_part storage_key={}, size={}, blocks={}",
+            storage_key,
+            size,
+            blocks.len()
+        );
+
         let mp = MultiPart::new(size, part_number, bucket, key, upload_id, hash, blocks);
 
         mp_map.insert(storage_key.as_bytes(), mp)?;
@@ -358,7 +365,23 @@ impl CasFS {
     ) -> Result<Option<MultiPart>, MetaError> {
         let mp_map = self.multipart_tree.clone();
         let part_key = self.part_key(bucket, key, upload_id, part_number);
-        mp_map.get_multipart_part(part_key.as_bytes())
+
+        tracing::info!(
+            "CasFS: get_multipart_part storage_key={}",
+            part_key
+        );
+
+        let result = mp_map.get_multipart_part(part_key.as_bytes());
+
+        if let Ok(Some(ref mp)) = result {
+            tracing::info!(
+                "CasFS: get_multipart_part found storage_key={}, blocks={}",
+                part_key,
+                mp.blocks().len()
+            );
+        }
+
+        result
     }
 
     pub fn remove_multipart_part(
@@ -370,6 +393,12 @@ impl CasFS {
     ) -> Result<(), MetaError> {
         let mp_map = self.multipart_tree.clone();
         let part_key = self.part_key(bucket, key, upload_id, part_number);
+
+        tracing::info!(
+            "CasFS: remove_multipart_part storage_key={}",
+            part_key
+        );
+
         mp_map.remove(part_key.as_bytes())
     }
 

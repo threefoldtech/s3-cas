@@ -88,6 +88,11 @@ impl S3 for S3FS {
             ..
         } = req.input;
 
+        info!(
+            "COMPLETE MULTIPART UPLOAD: bucket={}, key={}, upload_id={}",
+            bucket, key, upload_id
+        );
+
         let multipart_upload = if let Some(multipart_upload) = multipart_upload {
             multipart_upload
         } else {
@@ -114,7 +119,14 @@ impl S3 for S3FS {
                 self.casfs
                     .get_multipart_part(&bucket, &key, &upload_id, part_number as i64);
             let mp = match result {
-                Ok(Some(mp)) => mp,
+                Ok(Some(mp)) => {
+                    info!(
+                        "COMPLETE MULTIPART: Retrieved part {} with {} blocks",
+                        part_number,
+                        mp.blocks().len()
+                    );
+                    mp
+                }
                 Ok(None) => {
                     error!(
                         "Missing part \"{}\" in multipart upload: part not found",
@@ -133,6 +145,11 @@ impl S3 for S3FS {
             blocks.extend_from_slice(mp.blocks());
         }
 
+        info!(
+            "COMPLETE MULTIPART: Collected {} parts, total {} blocks",
+            cnt, blocks.len()
+        );
+
         let (content_hash, size) = try_!(self.calculate_multipart_hash(&blocks));
 
         let object_meta = try_!(self.casfs.create_object_meta(
@@ -141,12 +158,18 @@ impl S3 for S3FS {
             size as u64,
             content_hash,
             ObjectData::MultiPart {
-                blocks,
+                blocks: blocks.clone(),
                 parts: cnt as usize
             },
         ));
 
+        info!(
+            "COMPLETE MULTIPART: Created object metadata for bucket={}, key={}, size={}, parts={}",
+            bucket, key, size, cnt
+        );
+
         // Try to delete the multipart metadata. If this fails, it is not really an issue.
+        let mut cleaned_parts = 0;
         for part in multipart_upload.parts.into_iter().flatten() {
             if let Err(e) = self.casfs.remove_multipart_part(
                 &bucket,
@@ -155,8 +178,15 @@ impl S3 for S3FS {
                 part.part_number.unwrap() as i64,
             ) {
                 error!("Could not remove part: {}", e);
-            };
+            } else {
+                cleaned_parts += 1;
+            }
         }
+
+        info!(
+            "COMPLETE MULTIPART SUCCESS: bucket={}, key={}, upload_id={}, cleaned {} parts",
+            bucket, key, upload_id, cleaned_parts
+        );
 
         let output = CompleteMultipartUploadOutput {
             bucket: Some(bucket),
@@ -211,6 +241,11 @@ impl S3 for S3FS {
         }
 
         let upload_id = Uuid::new_v4().to_string();
+
+        info!(
+            "CREATE MULTIPART UPLOAD: bucket={}, key={}, upload_id={}",
+            bucket, key, upload_id
+        );
 
         let output = CreateMultipartUploadOutput {
             bucket: Some(bucket),
@@ -674,6 +709,11 @@ impl S3 for S3FS {
             ..
         } = req.input;
 
+        info!(
+            "UPLOAD PART: bucket={}, key={}, upload_id={}, part_number={}",
+            bucket, key, upload_id, part_number
+        );
+
         let Some(body) = body else {
             return Err(s3_error!(IncompleteBody));
         };
@@ -702,14 +742,19 @@ impl S3 for S3FS {
         }
 
         try_!(self.casfs.insert_multipart_part(
-            bucket,
-            key,
+            bucket.clone(),
+            key.clone(),
             size as usize,
             part_number as i64,
-            upload_id,
+            upload_id.clone(),
             hash,
-            blocks
+            blocks.clone()
         ));
+
+        info!(
+            "UPLOAD PART SUCCESS: bucket={}, key={}, upload_id={}, part_number={}, size={}, blocks={}",
+            bucket, key, upload_id, part_number, size, blocks.len()
+        );
 
         let e_tag = format!("\"{}\"", hex_string(&hash));
 
