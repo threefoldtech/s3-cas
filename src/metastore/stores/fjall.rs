@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{convert::TryFrom, sync::Mutex};
 
-use fjall::{self, Partition, TxPartitionHandle};
+use fjall::{self, TxPartitionHandle};
 
 use crate::metastore::{
     BaseMetaTree, Durability, KeyValuePairs, MetaError, MetaTreeExt, Object, Store, Transaction,
