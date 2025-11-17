@@ -24,7 +24,7 @@ pub fn html_response(status: StatusCode, html: String) -> Response<Full<Bytes>> 
 
 pub fn error_response(status: StatusCode, message: &str, wants_html: bool) -> Response<Full<Bytes>> {
     if wants_html {
-        html_response(status, templates::error_page(status, message))
+        html_response(status, templates::error_page(message))
     } else {
         let error = serde_json::json!({
             "error": message,

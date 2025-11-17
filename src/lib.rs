@@ -10,3 +10,4 @@ pub mod metastore;
 pub mod metrics;
 pub mod retrieve;
 pub mod s3fs;
+pub mod s3_wrapper;
