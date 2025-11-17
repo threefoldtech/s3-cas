@@ -68,12 +68,20 @@ pub struct BlockInfo {
     pub refcount: usize,
 }
 
-pub async fn list_buckets(casfs: &CasFS, wants_html: bool) -> Response<Full<Bytes>> {
+pub async fn list_buckets(
+    casfs: &CasFS,
+    wants_html: bool,
+    is_admin: Option<bool>,
+) -> Response<Full<Bytes>> {
     match casfs.list_buckets() {
         Ok(buckets) => {
             let bucket_infos: Vec<BucketInfo> = buckets.iter().map(BucketInfo::from).collect();
             if wants_html {
-                responses::html_response(StatusCode::OK, templates::buckets_page(&bucket_infos))
+                let page = match is_admin {
+                    Some(admin) => templates::buckets_page_with_user(&bucket_infos, admin),
+                    None => templates::buckets_page(&bucket_infos),
+                };
+                responses::html_response(StatusCode::OK, page)
             } else {
                 responses::json_response(StatusCode::OK, &bucket_infos)
             }

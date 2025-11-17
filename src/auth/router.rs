@@ -30,6 +30,7 @@ impl std::error::Error for RouterError {}
 pub struct UserRouter {
     auth: UserAuth,
     casfs_instances: HashMap<String, Arc<CasFS>>,
+    metrics: SharedMetrics,
 }
 
 impl UserRouter {
@@ -80,6 +81,7 @@ impl UserRouter {
         Self {
             auth,
             casfs_instances,
+            metrics,
         }
     }
 
@@ -102,8 +104,27 @@ impl UserRouter {
             .ok_or(RouterError::AuthenticationFailed)
     }
 
+    /// Get CasFS instance by user_id (for HTTP UI use)
+    ///
+    /// # Arguments
+    /// * `user_id` - User identifier
+    ///
+    /// # Returns
+    /// * `Result<Arc<CasFS>, RouterError>` - CasFS instance or error
+    pub fn get_casfs_by_user_id(&self, user_id: &str) -> Result<Arc<CasFS>, RouterError> {
+        self.casfs_instances
+            .get(user_id)
+            .cloned()
+            .ok_or_else(|| RouterError::UnknownUser(user_id.to_string()))
+    }
+
     /// Get UserAuth for authentication checks
     pub fn auth(&self) -> &UserAuth {
         &self.auth
+    }
+
+    /// Get SharedMetrics for metrics collection
+    pub fn metrics(&self) -> &SharedMetrics {
+        &self.metrics
     }
 }

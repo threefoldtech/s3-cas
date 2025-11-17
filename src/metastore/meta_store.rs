@@ -55,6 +55,17 @@ impl MetaStore {
         self.inlined_metadata_size - Object::minimum_inline_metadata_size()
     }
 
+    /// Returns a reference to the underlying store.
+    ///
+    /// This is used for creating additional stores that share the same storage backend,
+    /// such as UserStore in multi-user mode.
+    ///
+    /// # Returns
+    /// An Arc reference to the underlying Store implementation
+    pub fn get_underlying_store(&self) -> Arc<dyn Store> {
+        Arc::clone(&self.store)
+    }
+
     /// Returns the tree which contains all the buckets.
     ///
     /// This tree is used to store the bucket lists and provide

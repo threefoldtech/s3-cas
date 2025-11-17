@@ -310,7 +310,7 @@ impl MetaTreeExt for FjallTree {
         start_after: Option<String>,
         prefix: Option<String>,
         continuation_token: Option<String>,
-    ) -> Box<(dyn Iterator<Item = (String, Object)> + 'a)> {
+    ) -> Box<dyn Iterator<Item = (String, Object)> + 'a> {
         let mut ctsa = match (continuation_token, start_after) {
             (Some(token), Some(start)) => Some(std::cmp::max(token, start)),
             (Some(token), None) => Some(token),

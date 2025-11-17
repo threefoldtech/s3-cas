@@ -83,7 +83,7 @@ pub trait MetaTreeExt: BaseMetaTree {
         start_after: Option<String>,
         prefix: Option<String>,
         continuation_token: Option<String>,
-    ) -> Box<(dyn Iterator<Item = (String, Object)> + 'a)>;
+    ) -> Box<dyn Iterator<Item = (String, Object)> + 'a>;
 }
 
 /// `Store` represents a storage backend for metadata trees.

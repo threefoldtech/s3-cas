@@ -1,10 +1,14 @@
-use hyper::StatusCode;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 use super::handlers::{BucketInfo, ObjectListResponse, ObjectMetadata};
 
 /// Base HTML layout
 fn layout(title: &str, content: Markup) -> Markup {
+    layout_with_user(title, content, None)
+}
+
+/// Base HTML layout with user context (for multi-user mode)
+fn layout_with_user(title: &str, content: Markup, is_admin: Option<bool>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -21,6 +25,16 @@ fn layout(title: &str, content: Markup) -> Markup {
                         a href="/buckets" { "Buckets" }
                         " | "
                         a href="/health" { "Health" }
+                        @if let Some(true) = is_admin {
+                            " | "
+                            a href="/admin/users" class="admin-link" { "⚙️ Admin" }
+                        }
+                        @if is_admin.is_some() {
+                            " | "
+                            form method="post" action="/logout" style="display: inline;" {
+                                button type="submit" class="logout-button" { "Logout" }
+                            }
+                        }
                     }
                 }
                 main {
@@ -34,7 +48,44 @@ fn layout(title: &str, content: Markup) -> Markup {
     }
 }
 
-/// Bucket list page
+/// Bucket list page (multi-user mode)
+pub fn buckets_page_with_user(buckets: &[BucketInfo], is_admin: bool) -> String {
+    let content = html! {
+        div class="page-header" {
+            h2 { "Buckets" }
+            span class="count" { (buckets.len()) " bucket(s)" }
+        }
+
+        @if buckets.is_empty() {
+            p class="empty-state" { "No buckets found" }
+        } @else {
+            table {
+                thead {
+                    tr {
+                        th { "Name" }
+                        th { "Created" }
+                    }
+                }
+                tbody {
+                    @for bucket in buckets {
+                        tr {
+                            td {
+                                a href={ "/buckets/" (&bucket.name) } {
+                                    (&bucket.name)
+                                }
+                            }
+                            td { (&bucket.creation_date) }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    layout_with_user("Buckets - S3-CAS", content, Some(is_admin)).into_string()
+}
+
+/// Bucket list page (single-user mode)
 pub fn buckets_page(buckets: &[BucketInfo]) -> String {
     let content = html! {
         div class="page-header" {
@@ -244,11 +295,11 @@ pub fn object_detail_page(metadata: &ObjectMetadata) -> String {
     layout(&format!("{} - S3-CAS", metadata.key), content).into_string()
 }
 
-/// Error page
-pub fn error_page(status: StatusCode, message: &str) -> String {
+/// Error page (simple version for admin/login)
+pub fn error_page(message: &str) -> String {
     let content = html! {
         div class="error-page" {
-            h2 { "Error " (status.as_u16()) }
+            h2 { "Error" }
             p { (message) }
             p {
                 a href="/buckets" { "← Back to buckets" }
@@ -256,7 +307,188 @@ pub fn error_page(status: StatusCode, message: &str) -> String {
         }
     };
 
-    layout(&format!("Error {} - S3-CAS", status.as_u16()), content).into_string()
+    layout("Error - S3-CAS", content).into_string()
+}
+
+/// Login page
+pub fn login_page(redirect_to: &str, error: Option<&str>) -> String {
+    let content = html! {
+        div class="login-container" {
+            div class="login-box" {
+                h2 { "Login" }
+
+                @if let Some(err) = error {
+                    div class="alert alert-error" {
+                        (err)
+                    }
+                }
+
+                form method="POST" action="/login" {
+                    input type="hidden" name="redirect" value=(redirect_to);
+
+                    div class="form-group" {
+                        label for="username" { "Username" }
+                        input type="text" id="username" name="username" required autofocus;
+                    }
+
+                    div class="form-group" {
+                        label for="password" { "Password" }
+                        input type="password" id="password" name="password" required;
+                    }
+
+                    button type="submit" class="btn btn-primary" { "Login" }
+                }
+            }
+        }
+    };
+
+    layout("Login - S3-CAS", content).into_string()
+}
+
+/// Admin users list page
+pub fn admin_users_page(users: &[crate::auth::UserRecord]) -> String {
+    let content = html! {
+        div class="page-header" {
+            h2 { "User Management" }
+            a href="/admin/users/new" class="btn btn-primary" { "+ Create User" }
+        }
+
+        @if users.is_empty() {
+            p class="empty-state" { "No users found" }
+        } @else {
+            table {
+                thead {
+                    tr {
+                        th { "User ID" }
+                        th { "UI Login" }
+                        th { "S3 Access Key" }
+                        th { "Admin" }
+                        th { "Created" }
+                        th { "Actions" }
+                    }
+                }
+                tbody {
+                    @for user in users {
+                        tr {
+                            td { code { (&user.user_id) } }
+                            td { (&user.ui_login) }
+                            td { code { (&user.s3_access_key) } }
+                            td {
+                                @if user.is_admin {
+                                    span class="badge admin" { "Admin" }
+                                } @else {
+                                    span class="badge" { "User" }
+                                }
+                            }
+                            td { (format_unix_timestamp(user.created_at)) }
+                            td class="actions" {
+                                a href={"/admin/users/" (&user.user_id) "/reset-password"} class="btn btn-small" {
+                                    "Reset Password"
+                                }
+                                " "
+                                form method="POST" action={"/admin/users/" (&user.user_id) "/delete"} style="display: inline;" {
+                                    button type="submit" class="btn btn-small btn-danger"
+                                            onclick={"return confirm('Delete user " (&user.user_id) "?');"} {
+                                        "Delete"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        p class="help-text" {
+            a href="/buckets" { "← Back to buckets" }
+        }
+    };
+
+    layout("User Management - S3-CAS", content).into_string()
+}
+
+/// New user creation form
+pub fn new_user_form() -> String {
+    let content = html! {
+        div class="form-container" {
+            h2 { "Create New User" }
+
+            form method="POST" action="/admin/users" {
+                div class="form-group" {
+                    label for="user_id" { "User ID" span class="required" { "*" } }
+                    input type="text" id="user_id" name="user_id" required;
+                    small { "Unique identifier (e.g., username)" }
+                }
+
+                div class="form-group" {
+                    label for="ui_login" { "UI Login" span class="required" { "*" } }
+                    input type="text" id="ui_login" name="ui_login" required;
+                    small { "Login for web interface" }
+                }
+
+                div class="form-group" {
+                    label for="ui_password" { "UI Password" }
+                    input type="password" id="ui_password" name="ui_password";
+                    small { "Leave empty to auto-generate" }
+                }
+
+                div class="form-group" {
+                    label for="s3_access_key" { "S3 Access Key" }
+                    input type="text" id="s3_access_key" name="s3_access_key";
+                    small { "Leave empty to auto-generate" }
+                }
+
+                div class="form-group" {
+                    label for="s3_secret_key" { "S3 Secret Key" }
+                    input type="password" id="s3_secret_key" name="s3_secret_key";
+                    small { "Leave empty to auto-generate" }
+                }
+
+                div class="form-group" {
+                    label {
+                        input type="checkbox" id="is_admin" name="is_admin";
+                        " Admin privileges"
+                    }
+                }
+
+                div class="form-actions" {
+                    button type="submit" class="btn btn-primary" { "Create User" }
+                    " "
+                    a href="/admin/users" class="btn" { "Cancel" }
+                }
+            }
+        }
+    };
+
+    layout("Create User - S3-CAS", content).into_string()
+}
+
+/// Password reset form
+pub fn reset_password_form(user: &crate::auth::UserRecord) -> String {
+    let content = html! {
+        div class="form-container" {
+            h2 { "Reset Password for " (&user.ui_login) }
+
+            form method="POST" action={"/admin/users/" (&user.user_id) "/password"} {
+                div class="form-group" {
+                    label for="new_password" { "New Password" span class="required" { "*" } }
+                    input type="password" id="new_password" name="new_password" required autofocus;
+                }
+
+                div class="alert alert-info" {
+                    "Note: This will invalidate all active sessions for this user."
+                }
+
+                div class="form-actions" {
+                    button type="submit" class="btn btn-primary" { "Reset Password" }
+                    " "
+                    a href="/admin/users" class="btn" { "Cancel" }
+                }
+            }
+        }
+    };
+
+    layout(&format!("Reset Password - {}", user.ui_login), content).into_string()
 }
 
 // Helper functions
@@ -287,6 +519,12 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.2} {}", size, UNITS[unit_idx])
     }
+}
+
+fn format_unix_timestamp(unix_seconds: u64) -> String {
+    let datetime = chrono::DateTime::from_timestamp(unix_seconds as i64, 0)
+        .unwrap_or_default();
+    datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
 // CSS Styles
@@ -559,6 +797,163 @@ code {
     }
 }
 
+/* Login page */
+.login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 60vh;
+}
+
+.login-box {
+    width: 100%;
+    max-width: 400px;
+    padding: 2rem;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: white;
+}
+
+.login-box h2 {
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+/* Forms */
+.form-container {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+}
+
+.form-group input[type="text"],
+.form-group input[type="password"] {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.form-group small {
+    display: block;
+    margin-top: 0.25rem;
+    color: #666;
+    font-size: 0.875rem;
+}
+
+.required {
+    color: #d9534f;
+}
+
+.form-actions {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid #ddd;
+}
+
+/* Buttons */
+.btn {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+    color: #333;
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 1rem;
+}
+
+.btn:hover {
+    background: #f0f0f0;
+}
+
+.btn-primary {
+    background: #007bff;
+    color: white;
+    border-color: #007bff;
+}
+
+.btn-primary:hover {
+    background: #0056b3;
+    border-color: #0056b3;
+}
+
+.btn-danger {
+    background: #d9534f;
+    color: white;
+    border-color: #d9534f;
+}
+
+.btn-danger:hover {
+    background: #c9302c;
+    border-color: #c9302c;
+}
+
+.btn-small {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+}
+
+/* Alerts */
+.alert {
+    padding: 1rem;
+    margin-bottom: 1rem;
+    border-radius: 4px;
+}
+
+.alert-error {
+    background: #f8d7da;
+    border: 1px solid #f5c6cb;
+    color: #721c24;
+}
+
+.alert-info {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    color: #0c5460;
+}
+
+.alert-success {
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+    color: #155724;
+}
+
+/* Admin UI */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+
+.actions {
+    white-space: nowrap;
+}
+
+.badge.admin {
+    background: #007bff;
+    color: white;
+}
+
+.help-text {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid #ddd;
+    color: #666;
+}
+
 @media (prefers-color-scheme: dark) {
     body {
         background: #1a1a1a;
@@ -599,6 +994,59 @@ code {
     }
 
     .count {
+        color: #a0a0a0;
+    }
+
+    .login-box {
+        background: #2d2d2d;
+        border-color: #444;
+    }
+
+    .form-group input[type="text"],
+    .form-group input[type="password"] {
+        background: #3a3a3a;
+        border-color: #444;
+        color: #e0e0e0;
+    }
+
+    .form-group small {
+        color: #a0a0a0;
+    }
+
+    .form-actions {
+        border-top-color: #444;
+    }
+
+    .btn {
+        background: #3a3a3a;
+        border-color: #444;
+        color: #e0e0e0;
+    }
+
+    .btn:hover {
+        background: #4a4a4a;
+    }
+
+    .alert-error {
+        background: #3a1a1a;
+        border-color: #6a2a2a;
+        color: #f8d7da;
+    }
+
+    .alert-info {
+        background: #1a2a3a;
+        border-color: #2a4a6a;
+        color: #d1ecf1;
+    }
+
+    .alert-success {
+        background: #1a3a1a;
+        border-color: #2a6a2a;
+        color: #d4edda;
+    }
+
+    .help-text {
+        border-top-color: #444;
         color: #a0a0a0;
     }
 }

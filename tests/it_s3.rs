@@ -8,6 +8,7 @@ use s3s::host::SingleDomain;
 use s3s::service::S3ServiceBuilder;
 
 use std::env;
+use std::sync::Arc;
 
 use aws_config::SdkConfig;
 use aws_credential_types::provider::SharedCredentialsProvider;
@@ -87,7 +88,7 @@ static CONFIG: Lazy<SdkConfig> = Lazy::new(|| {
         inlined_size,
         None,
     );
-    let s3fs = s3_cas::s3fs::S3FS::new(casfs, metrics.clone());
+    let s3fs = s3_cas::s3fs::S3FS::new(Arc::new(casfs), metrics.clone());
 
     // Setup S3 service
     let service = {

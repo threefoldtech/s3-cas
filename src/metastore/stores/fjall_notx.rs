@@ -242,7 +242,7 @@ impl MetaTreeExt for FjallTreeNotx {
         start_after: Option<String>,
         prefix: Option<String>,
         continuation_token: Option<String>,
-    ) -> Box<(dyn Iterator<Item = (String, Object)> + 'a)> {
+    ) -> Box<dyn Iterator<Item = (String, Object)> + 'a> {
         let mut ctsa = match (continuation_token, start_after) {
             (Some(token), Some(start)) => Some(std::cmp::max(token, start)),
             (Some(token), None) => Some(token),
@@ -298,14 +298,14 @@ mod tests {
     use tempfile::tempdir;
 
     impl test_utils::TestStore for FjallStoreNotx {
-        fn tree_open(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError> {
+        fn tree_open(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
             <FjallStoreNotx as Store>::tree_open(self, name)
         }
 
         fn get_bucket_ext(
             &self,
             name: &str,
-        ) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError> {
+        ) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
             <FjallStoreNotx as Store>::tree_ext_open(self, name)
         }
     }

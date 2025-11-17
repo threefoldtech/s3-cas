@@ -706,11 +706,11 @@ mod tests {
 
     #[async_trait]
     impl AsyncFileSystem for MockFs {
-        async fn create_dir_all(&self, _path: &std::path::Path) -> std::io::Result<()> {
+        fn create_dir_all(&self, _path: &std::path::Path) -> std::io::Result<()> {
             Ok(())
         }
 
-        async fn write(&self, _path: &std::path::Path, _contents: &[u8]) -> std::io::Result<()> {
+        fn write(&self, _path: &std::path::Path, _contents: &[u8]) -> std::io::Result<()> {
             if !self.should_fail_write {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -798,7 +798,7 @@ mod tests {
 
         // Store object
         let obj = fs
-            .store_single_object_and_meta(BUCKET_NAME, KEY1, stream)
+            .store_single_object_and_meta(BUCKET_NAME, KEY1, stream, test_data_len)
             .await
             .unwrap();
 
@@ -829,7 +829,7 @@ mod tests {
         ));
 
         let new_obj = fs
-            .store_single_object_and_meta(BUCKET_NAME, KEY2, stream)
+            .store_single_object_and_meta(BUCKET_NAME, KEY2, stream, test_data_len)
             .await
             .unwrap();
 
@@ -878,6 +878,7 @@ mod tests {
 
         // Create ByteStream from test data
         let test_data = b"long test data".repeat(100).to_vec();
+        let test_data_len = test_data.len();
         let test_data_2 = test_data.clone();
         let test_data_3 = test_data.clone();
         let stream = ByteStream::new(stream::once(
@@ -886,7 +887,7 @@ mod tests {
 
         // Store object
         let obj = fs
-            .store_single_object_and_meta(bucket_name, key1, stream)
+            .store_single_object_and_meta(bucket_name, key1, stream, test_data_len)
             .await
             .unwrap();
 
@@ -907,7 +908,7 @@ mod tests {
                 ));
 
             let new_obj = fs
-                .store_single_object_and_meta(bucket_name, key1, stream)
+                .store_single_object_and_meta(bucket_name, key1, stream, test_data_len)
                 .await
                 .unwrap();
 
@@ -925,7 +926,7 @@ mod tests {
                 ));
 
             let new_obj = fs
-                .store_single_object_and_meta(bucket_name, key2, stream)
+                .store_single_object_and_meta(bucket_name, key2, stream, test_data_len)
                 .await
                 .unwrap();
 
@@ -956,11 +957,12 @@ mod tests {
 
         // Create test data and stream
         let test_data = b"test data".to_vec();
+        let test_data_len = test_data.len();
         let stream = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store object
         let obj = fs
-            .store_single_object_and_meta(bucket_name, key, stream)
+            .store_single_object_and_meta(bucket_name, key, stream, test_data_len)
             .await
             .unwrap();
 
@@ -1025,12 +1027,13 @@ mod tests {
 
         // Create test data
         let test_data = b"test data".to_vec();
+        let test_data_len = test_data.len();
         let test_data2 = test_data.clone();
         let stream1 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store first object
         let obj1 = fs
-            .store_single_object_and_meta(bucket, key1, stream1)
+            .store_single_object_and_meta(bucket, key1, stream1, test_data_len)
             .await
             .unwrap();
         // Verify blocks  exist with rc=1
@@ -1045,7 +1048,7 @@ mod tests {
         let stream2 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
 
         let obj2 = fs
-            .store_single_object_and_meta(bucket, key2, stream2)
+            .store_single_object_and_meta(bucket, key2, stream2, test_data_len)
             .await
             .unwrap();
 
@@ -1102,12 +1105,13 @@ mod tests {
 
         // Create test data
         let test_data = b"test data".to_vec();
+        let test_data_len = test_data.len();
         let test_data2 = test_data.clone();
         let stream1 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store first object
         let obj1 = fs
-            .store_single_object_and_meta(bucket, key1, stream1)
+            .store_single_object_and_meta(bucket, key1, stream1, test_data_len)
             .await
             .unwrap();
         // Verify blocks  exist with rc=1
@@ -1122,7 +1126,7 @@ mod tests {
         let stream2 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
 
         let obj2 = fs
-            .store_single_object_and_meta(bucket, key1, stream2)
+            .store_single_object_and_meta(bucket, key1, stream2, test_data_len)
             .await
             .unwrap();
 

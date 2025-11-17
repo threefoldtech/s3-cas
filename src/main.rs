@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -65,10 +66,10 @@ pub struct ServerConfig {
     #[arg(long, help = "leave empty to disable it")]
     inline_metadata_size: Option<usize>,
 
-    #[arg(long, required = true, display_order = 1000)]
+    #[arg(long, display_order = 1000, help = "S3 access key (required in single-user mode)")]
     access_key: Option<String>,
 
-    #[arg(long, required = true, display_order = 1000)]
+    #[arg(long, display_order = 1000, help = "S3 secret key (required in single-user mode)")]
     secret_key: Option<String>,
 
     #[arg(
@@ -174,8 +175,19 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
     let storage_engine = args.metadata_db;
     let metrics = s3_cas::metrics::SharedMetrics::new();
 
-    // Check if multi-user mode is enabled
+    // Validate argument combinations
     let users_config_path = args.users_config.clone();
+    if users_config_path.is_none() {
+        // Single-user mode requires access_key and secret_key
+        if args.access_key.is_none() || args.secret_key.is_none() {
+            anyhow::bail!(
+                "Single-user mode requires both --access-key and --secret-key.\n\
+                 For multi-user mode, use --users-config instead."
+            );
+        }
+    }
+
+    // Check if multi-user mode is enabled
     if let Some(users_config_path) = users_config_path {
         info!("Multi-user mode enabled, loading users from {:?}", users_config_path);
         run_multi_user(args, storage_engine, metrics, users_config_path).await
@@ -183,6 +195,16 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
         info!("Single-user mode");
         run_single_user(args, storage_engine, metrics).await
     }
+}
+
+/// Generates a random password for initial user creation
+fn generate_random_password(length: usize) -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::thread_rng();
+    (0..length)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect()
 }
 
 async fn run_single_user(
@@ -199,7 +221,7 @@ async fn run_single_user(
         args.inline_metadata_size,
         Some(args.durability),
     );
-    let s3fs = s3_cas::s3fs::S3FS::new(casfs, metrics.clone());
+    let s3fs = s3_cas::s3fs::S3FS::new(Arc::new(casfs), metrics.clone());
     let s3fs = s3_cas::metrics::MetricFs::new(s3fs, metrics.clone());
 
     // HTTP UI service (if enabled)
@@ -223,10 +245,12 @@ async fn run_single_user(
             _ => None,
         };
 
-        Some(s3_cas::http_ui::HttpUiService::new(
-            http_casfs,
-            metrics.clone(),
-            auth,
+        Some(s3_cas::http_ui::HttpUiServiceWrapper::SingleUser(
+            s3_cas::http_ui::HttpUiService::new(
+                http_casfs,
+                metrics.clone(),
+                auth,
+            )
         ))
     } else {
         None
@@ -273,9 +297,16 @@ async fn run_multi_user(
         Some(args.durability),
     )?;
 
+    // Create UserStore using the same storage backend as SharedBlockStore
+    let user_store = Arc::new(s3_cas::auth::UserStore::new(
+        shared_block_store.meta_store().get_underlying_store()
+    ));
+
+    // Create SessionStore for HTTP UI authentication
+    let session_store = Arc::new(s3_cas::auth::SessionStore::new());
+
     // Create user router with pre-created CasFS instances
-    // NOTE: Not used in Phase 1 - we create CasFS instances directly below
-    let _user_router = UserRouter::new(
+    let user_router = Arc::new(UserRouter::new(
         users_config.clone(),
         &shared_block_store,
         args.fs_root.clone(),
@@ -284,75 +315,71 @@ async fn run_multi_user(
         storage_engine,
         args.inline_metadata_size,
         Some(args.durability),
-    );
+    ));
 
-    // Build S3 auth from user config
-    let mut auth_builder = s3s::auth::SimpleAuth::new();
-    for (user_id, user) in &users_config.users {
-        auth_builder.register(user.access_key.clone(), user.secret_key.clone().into());
-        info!("Registered user: {}", user_id);
+    // Migrate users from users.toml to database (one-time migration)
+    // Check if first user from config exists in database
+    let needs_migration = if let Some((first_user_id, _)) = users_config.users.iter().next() {
+        user_store.get_user_by_id(first_user_id)?.is_none()
+    } else {
+        false
+    };
+
+    if needs_migration && !users_config.users.is_empty() {
+        info!("Migrating {} users from users.toml to database...", users_config.users.len());
+
+        let mut is_first = true;
+        for (user_id, user) in &users_config.users {
+            // Generate random initial password
+            let initial_password = generate_random_password(16);
+
+            let user_record = s3_cas::auth::UserRecord::new(
+                user_id.clone(),
+                user_id.clone(), // ui_login = user_id by default
+                &initial_password,
+                user.access_key.clone(),
+                user.secret_key.clone(),
+                is_first, // first user is admin
+            )?;
+
+            user_store.create_user(user_record)?;
+
+            info!("✓ User '{}' created | Initial password: {}", user_id, initial_password);
+            info!("  Please log in and change your password immediately.");
+
+            is_first = false;
+        }
+
+        info!("Migration complete! {} users created.", users_config.users.len());
     }
 
-    // TEMPORARY: Create a CasFS instance for the first user for S3 service
-    // TODO: Proper per-request routing would require a custom S3 trait implementation
-    let first_user_id = users_config.users.keys().next()
-        .ok_or_else(|| anyhow::anyhow!("No users configured"))?;
-
-    let s3_casfs = CasFS::new_multi_user(
-        args.fs_root.clone(),
-        args.meta_root.join(format!("user_{}", first_user_id)),
-        shared_block_store.block_tree(),
-        shared_block_store.path_tree(),
-        shared_block_store.multipart_tree(),
-        shared_block_store.meta_store(),
-        metrics.clone(),
-        storage_engine,
-        args.inline_metadata_size,
-        Some(args.durability),
+    // Create S3UserRouter for per-request routing
+    info!("Setting up S3UserRouter for per-user S3 API access");
+    let s3_user_router = s3_cas::s3_wrapper::S3UserRouter::new(
+        user_router.clone(),
+        user_store.clone(),
     );
+    let s3_service = s3_cas::metrics::MetricFs::new(s3_user_router, metrics.clone());
 
-    let s3fs = s3_cas::s3fs::S3FS::new(s3_casfs, metrics.clone());
-    let s3fs = s3_cas::metrics::MetricFs::new(s3fs, metrics.clone());
-
-    // HTTP UI service (if enabled) - use first user for now
+    // HTTP UI service (if enabled) - multi-user with session-based auth
     let http_ui_service = if args.enable_http_ui {
-        let http_casfs = CasFS::new_multi_user(
-            args.fs_root.clone(),
-            args.meta_root.join(format!("user_{}", first_user_id)),
-            shared_block_store.block_tree(),
-            shared_block_store.path_tree(),
-            shared_block_store.multipart_tree(),
-            shared_block_store.meta_store(),
-            metrics.clone(),
-            storage_engine,
-            args.inline_metadata_size,
-            Some(args.durability),
-        );
-
-        let http_ui_username = args.http_ui_username.clone();
-        let http_ui_password = args.http_ui_password.clone();
-        let auth = match (http_ui_username, http_ui_password) {
-            (Some(username), Some(password)) => {
-                info!("HTTP UI basic auth enabled for user: {}", username);
-                Some(s3_cas::http_ui::BasicAuth::new(username, password))
-            }
-            _ => None,
-        };
-
-        Some(s3_cas::http_ui::HttpUiService::new(
-            http_casfs,
-            metrics.clone(),
-            auth,
+        info!("HTTP UI enabled with session-based authentication");
+        Some(s3_cas::http_ui::HttpUiServiceWrapper::MultiUser(
+            s3_cas::http_ui::HttpUiServiceMultiUser::new(
+                user_router.clone(),
+                user_store.clone(),
+                session_store.clone(),
+                metrics.clone(),
+            )
         ))
     } else {
         None
     };
 
-    // Setup S3 service with multi-user auth
+    // Setup S3 service (no auth builder needed - S3UserRouter handles authentication internally)
     let service = {
-        let mut b = S3ServiceBuilder::new(s3fs);
-        b.set_auth(auth_builder);
-        info!("Multi-user authentication enabled");
+        let b = S3ServiceBuilder::new(s3_service);
+        info!("Multi-user S3 service enabled with per-request routing");
         b.build()
     };
 
@@ -362,7 +389,7 @@ async fn run_multi_user(
 async fn run_server(
     args: ServerConfig,
     service: s3s::service::S3Service,
-    http_ui_service: Option<s3_cas::http_ui::HttpUiService>,
+    http_ui_service: Option<s3_cas::http_ui::HttpUiServiceWrapper>,
     _metrics: s3_cas::metrics::SharedMetrics,
 ) -> anyhow::Result<()> {
 
