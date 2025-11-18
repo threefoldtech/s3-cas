@@ -25,6 +25,10 @@ fn layout_with_user(title: &str, content: Markup, is_admin: Option<bool>) -> Mar
                         a href="/buckets" { "Buckets" }
                         " | "
                         a href="/health" { "Health" }
+                        @if is_admin.is_some() {
+                            " | "
+                            a href="/profile" { "👤 Profile" }
+                        }
                         @if let Some(true) = is_admin {
                             " | "
                             a href="/admin/users" class="admin-link" { "⚙️ Admin" }
@@ -386,6 +390,17 @@ pub fn admin_users_page(users: &[crate::auth::UserRecord]) -> String {
                                     "Reset Password"
                                 }
                                 " "
+                                form method="POST" action={"/admin/users/" (&user.user_id) "/toggle-admin"} style="display: inline;" {
+                                    button type="submit" class="btn btn-small"
+                                            title={@if user.is_admin { "Revoke admin rights" } @else { "Grant admin rights" }} {
+                                        @if user.is_admin {
+                                            "Revoke Admin"
+                                        } @else {
+                                            "Make Admin"
+                                        }
+                                    }
+                                }
+                                " "
                                 form method="POST" action={"/admin/users/" (&user.user_id) "/delete"} style="display: inline;" {
                                     button type="submit" class="btn btn-small btn-danger"
                                             onclick={"return confirm('Delete user " (&user.user_id) "?');"} {
@@ -489,6 +504,143 @@ pub fn reset_password_form(user: &crate::auth::UserRecord) -> String {
     };
 
     layout(&format!("Reset Password - {}", user.ui_login), content).into_string()
+}
+
+/// Profile page showing S3 credentials and password change form
+pub fn profile_page(user: &crate::auth::UserRecord, error_message: Option<&str>) -> String {
+    let content = html! {
+        h2 { "My Profile" }
+
+        div class="profile-section" {
+            h3 { "Account Information" }
+            table class="info-table" {
+                tr {
+                    th { "User ID" }
+                    td { (&user.user_id) }
+                }
+                tr {
+                    th { "UI Login" }
+                    td { (&user.ui_login) }
+                }
+                @if user.is_admin {
+                    tr {
+                        th { "Role" }
+                        td {
+                            span class="badge badge-admin" { "Administrator" }
+                        }
+                    }
+                }
+            }
+        }
+
+        div class="profile-section" {
+            h3 { "S3 Credentials" }
+            p class="help-text" {
+                "Use these credentials to configure your S3 client (e.g., aws-cli, s3cmd, rclone)"
+            }
+
+            table class="info-table credentials-table" {
+                tr {
+                    th { "Access Key" }
+                    td {
+                        code class="credential" { (&user.s3_access_key) }
+                    }
+                }
+                tr {
+                    th { "Secret Key" }
+                    td {
+                        code class="credential" id="secret-key" data-secret=(&user.s3_secret_key) { "••••••••••••••••••••" }
+                        " "
+                        button type="button" class="btn-small" onclick="toggleSecret()" { "Show" }
+                    }
+                }
+            }
+
+            details class="example-config" {
+                summary { "Example: AWS CLI Configuration" }
+                pre {
+                    code class="config-code" {
+                        "[profile s3cas]\n"
+                        "aws_access_key_id = " (&user.s3_access_key) "\n"
+                        "aws_secret_access_key = " (&user.s3_secret_key) "\n"
+                        "endpoint_url = http://localhost:8014\n"
+                        "region = us-east-1"
+                    }
+                }
+            }
+
+            details class="example-config" {
+                summary { "Example: MinIO Client (mc) Configuration" }
+                pre {
+                    code class="config-code" {
+                        "mc alias set s3cas http://localhost:8014 " (&user.s3_access_key) " " (&user.s3_secret_key)
+                    }
+                }
+                p class="help-text" style="margin-top: 0.5rem;" {
+                    "Then use: "
+                    code { "mc ls s3cas/" }
+                    ", "
+                    code { "mc cp file.txt s3cas/mybucket/" }
+                }
+            }
+
+            script {
+                (PreEscaped(r#"
+                    let isShown = false;
+                    function toggleSecret() {
+                        const el = document.getElementById('secret-key');
+                        const btn = event.target;
+                        if (isShown) {
+                            el.textContent = '••••••••••••••••••••';
+                            btn.textContent = 'Show';
+                        } else {
+                            el.textContent = el.dataset.secret;
+                            btn.textContent = 'Hide';
+                        }
+                        isShown = !isShown;
+                    }
+                "#))
+            }
+        }
+
+        div class="profile-section" {
+            h3 { "Change Password" }
+
+            // Show error messages
+            @if let Some(error) = error_message {
+                div class="alert alert-error" {
+                    (error)
+                }
+            }
+
+            form method="POST" action="/profile/password" {
+                div class="form-group" {
+                    label for="current_password" { "Current Password" span class="required" { "*" } }
+                    input type="password" id="current_password" name="current_password" required;
+                }
+
+                div class="form-group" {
+                    label for="new_password" { "New Password" span class="required" { "*" } }
+                    input type="password" id="new_password" name="new_password" required;
+                }
+
+                div class="form-group" {
+                    label for="confirm_password" { "Confirm New Password" span class="required" { "*" } }
+                    input type="password" id="confirm_password" name="confirm_password" required;
+                }
+
+                div class="alert alert-info" {
+                    "Note: Changing your password will log you out from all devices."
+                }
+
+                div class="form-actions" {
+                    button type="submit" class="btn btn-primary" { "Change Password" }
+                }
+            }
+        }
+    };
+
+    layout_with_user("My Profile - S3-CAS", content, Some(user.is_admin)).into_string()
 }
 
 // Helper functions
@@ -928,6 +1080,102 @@ code {
     background: #d4edda;
     border: 1px solid #c3e6cb;
     color: #155724;
+}
+
+/* Profile Page */
+.profile-section {
+    background: white;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.profile-section h3 {
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #f0f0f0;
+    color: #444;
+}
+
+.info-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.info-table th,
+.info-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.info-table th {
+    width: 200px;
+    font-weight: 600;
+    color: #666;
+}
+
+.credential {
+    background: #f5f5f5;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+    display: inline-block;
+}
+
+.btn-small {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.85em;
+    background: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.btn-small:hover {
+    background: #0056b3;
+}
+
+.example-config {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: #f8f9fa;
+    border-radius: 4px;
+}
+
+.example-config summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #007bff;
+}
+
+.example-config pre {
+    margin-top: 1rem;
+    background: #2d2d2d;
+    padding: 1rem;
+    border-radius: 4px;
+    overflow-x: auto;
+}
+
+.example-config pre code {
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+    color: #f8f8f2 !important;
+    background: transparent !important;
+    padding: 0 !important;
+    display: block;
+    line-height: 1.5;
+}
+
+.badge-admin {
+    background: #007bff;
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.85em;
 }
 
 /* Admin UI */
