@@ -3,6 +3,7 @@ mod auth;
 mod handlers;
 mod login;
 mod middleware;
+mod profile;
 mod responses;
 mod templates;
 
@@ -262,7 +263,7 @@ impl HttpUiServiceMultiUser {
                 return self.session_auth.forbidden_response();
             }
 
-            return self.handle_admin_request(req, &path, &method).await;
+            return self.handle_admin_request(req, &auth_context.user_id, &path, &method).await;
         }
 
         // Regular authenticated routes
@@ -273,6 +274,7 @@ impl HttpUiServiceMultiUser {
     async fn handle_admin_request(
         &self,
         req: Request<hyper::body::Incoming>,
+        current_user_id: &str,
         path: &str,
         method: &Method,
     ) -> Response<Full<Bytes>> {
@@ -287,6 +289,12 @@ impl HttpUiServiceMultiUser {
                     .trim_start_matches("/admin/users/")
                     .trim_end_matches("/delete");
                 admin::handle_delete_user(user_id, self.user_store.clone(), self.session_store.clone()).await
+            }
+            (&Method::POST, path) if path.starts_with("/admin/users/") && path.ends_with("/toggle-admin") => {
+                let user_id = path
+                    .trim_start_matches("/admin/users/")
+                    .trim_end_matches("/toggle-admin");
+                admin::handle_toggle_admin(user_id, current_user_id, self.user_store.clone()).await
             }
             (&Method::GET, path) if path.starts_with("/admin/users/") && path.ends_with("/reset-password") => {
                 let user_id = path
@@ -328,6 +336,19 @@ impl HttpUiServiceMultiUser {
 
         match (method, path) {
             (&Method::GET, "/") => self.handle_root(wants_html).await,
+            (&Method::GET, "/profile") => {
+                profile::handle_profile_page(user_id.to_string(), self.user_store.clone(), req).await
+            }
+            (&Method::POST, "/profile/password") => {
+                profile::handle_change_password(
+                    user_id.to_string(),
+                    req,
+                    self.user_store.clone(),
+                    self.session_store.clone(),
+                    self.session_auth.clone(),
+                )
+                .await
+            }
             (&Method::GET, "/api/v1/buckets") => handlers::list_buckets(&casfs, false, Some(is_admin)).await,
             (&Method::GET, "/buckets") => handlers::list_buckets(&casfs, wants_html, Some(is_admin)).await,
             (&Method::GET, path) if path.starts_with("/buckets/") => {

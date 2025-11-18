@@ -278,6 +278,48 @@ fn redirect_with_error(location: &str, error: &str) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
+/// Handles POST /admin/users/{user_id}/toggle-admin - toggles admin status
+pub async fn handle_toggle_admin(
+    user_id: &str,
+    current_user_id: &str,
+    user_store: Arc<UserStore>,
+) -> Response<Full<Bytes>> {
+    // Prevent users from removing their own admin rights
+    if user_id == current_user_id {
+        return redirect_with_error("/admin/users", "You cannot modify your own admin rights");
+    }
+
+    // Get current user
+    let user = match user_store.get_user_by_id(user_id) {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            return redirect_with_error("/admin/users", &format!("User '{}' not found", user_id));
+        }
+        Err(e) => {
+            warn!("Failed to get user {}: {}", user_id, e);
+            return redirect_with_error("/admin/users", "Failed to get user");
+        }
+    };
+
+    // Toggle admin status
+    let new_status = !user.is_admin;
+    let action = if new_status { "granted" } else { "revoked" };
+
+    match user_store.update_admin_status(user_id, new_status) {
+        Ok(_) => {
+            debug!("Admin rights {} for user: {}", action, user_id);
+            redirect_with_success(
+                "/admin/users",
+                &format!("Admin rights {} for user '{}'", action, user_id),
+            )
+        }
+        Err(e) => {
+            warn!("Failed to update admin status for {}: {}", user_id, e);
+            redirect_with_error("/admin/users", &format!("Failed to update admin status: {}", e))
+        }
+    }
+}
+
 /// Helper to create a redirect response with success message
 fn redirect_with_success(location: &str, message: &str) -> Response<Full<Bytes>> {
     let redirect_url = format!("{}?success={}", location, urlencoding::encode(message));

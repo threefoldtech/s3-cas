@@ -245,6 +245,26 @@ impl UserStore {
         Ok(())
     }
 
+    /// Updates a user's admin status
+    pub fn update_admin_status(&self, user_id: &str, is_admin: bool) -> Result<(), MetaError> {
+        debug!("Updating admin status for user: {} to {}", user_id, is_admin);
+
+        let mut user = match self.get_user_by_id(user_id)? {
+            Some(u) => u,
+            None => {
+                return Err(MetaError::OtherDBError(format!("User '{}' not found", user_id)));
+            }
+        };
+
+        user.is_admin = is_admin;
+
+        let users_tree = self.store.tree_open(USERS_TREE)?;
+        users_tree.insert(user_id.as_bytes(), user.to_vec()?)?;
+
+        debug!("Admin status updated successfully for user: {}", user_id);
+        Ok(())
+    }
+
     /// Verifies a password for a user
     pub fn verify_password(&self, user_id: &str, password: &str) -> Result<bool, MetaError> {
         match self.get_user_by_id(user_id)? {

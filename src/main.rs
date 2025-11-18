@@ -6,7 +6,7 @@ use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use http_body_util::Full;
 use prometheus::Encoder;
-use tracing::{info, Level};
+use tracing::{debug, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use s3_cas::cas::{CasFS, StorageEngine};
@@ -376,10 +376,19 @@ async fn run_multi_user(
         None
     };
 
-    // Setup S3 service (no auth builder needed - S3UserRouter handles authentication internally)
+    // Setup S3 service with multi-user authentication
     let service = {
-        let b = S3ServiceBuilder::new(s3_service);
-        info!("Multi-user S3 service enabled with per-request routing");
+        let mut auth = s3s::auth::SimpleAuth::new();
+
+        // Register all users from config
+        for (user_id, user) in &users_config.users {
+            auth.register(user.access_key.clone(), user.secret_key.clone().into());
+            debug!("Registered S3 credentials for user: {}", user_id);
+        }
+
+        let mut b = S3ServiceBuilder::new(s3_service);
+        b.set_auth(auth);
+        info!("Multi-user S3 service enabled with {} users", users_config.users.len());
         b.build()
     };
 
