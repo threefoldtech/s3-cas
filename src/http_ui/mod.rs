@@ -230,13 +230,26 @@ impl HttpUiServiceMultiUser {
         // Public routes (no auth required)
         if middleware::is_public_path(&path) {
             return match (&method, path.as_str()) {
-                (&Method::GET, "/login") => login::handle_login_page(req, self.session_auth.clone()).await,
+                (&Method::GET, "/login") => {
+                    login::handle_login_page(req, self.user_store.clone(), self.session_auth.clone()).await
+                }
                 (&Method::POST, "/login") => {
                     login::handle_login_submit(
                         req,
                         self.user_store.clone(),
                         self.session_store.clone(),
                         self.session_auth.clone(),
+                        self.metrics.clone(),
+                    )
+                    .await
+                }
+                (&Method::POST, "/setup-admin") => {
+                    login::handle_setup_admin(
+                        req,
+                        self.user_store.clone(),
+                        self.session_store.clone(),
+                        self.session_auth.clone(),
+                        self.metrics.clone(),
                     )
                     .await
                 }
@@ -282,19 +295,19 @@ impl HttpUiServiceMultiUser {
             (&Method::GET, "/admin/users") => admin::handle_list_users(self.user_store.clone()).await,
             (&Method::GET, "/admin/users/new") => admin::handle_new_user_form().await,
             (&Method::POST, "/admin/users") => {
-                admin::handle_create_user(req, self.user_store.clone()).await
+                admin::handle_create_user(req, self.user_store.clone(), self.metrics.clone()).await
             }
             (&Method::POST, path) if path.starts_with("/admin/users/") && path.ends_with("/delete") => {
                 let user_id = path
                     .trim_start_matches("/admin/users/")
                     .trim_end_matches("/delete");
-                admin::handle_delete_user(user_id, self.user_store.clone(), self.session_store.clone()).await
+                admin::handle_delete_user(user_id, self.user_store.clone(), self.session_store.clone(), self.metrics.clone()).await
             }
             (&Method::POST, path) if path.starts_with("/admin/users/") && path.ends_with("/toggle-admin") => {
                 let user_id = path
                     .trim_start_matches("/admin/users/")
                     .trim_end_matches("/toggle-admin");
-                admin::handle_toggle_admin(user_id, current_user_id, self.user_store.clone()).await
+                admin::handle_toggle_admin(user_id, current_user_id, self.user_store.clone(), self.metrics.clone()).await
             }
             (&Method::GET, path) if path.starts_with("/admin/users/") && path.ends_with("/reset-password") => {
                 let user_id = path
@@ -306,7 +319,7 @@ impl HttpUiServiceMultiUser {
                 let user_id = path
                     .trim_start_matches("/admin/users/")
                     .trim_end_matches("/password");
-                admin::handle_update_password(user_id, req, self.user_store.clone(), self.session_store.clone()).await
+                admin::handle_update_password(user_id, req, self.user_store.clone(), self.session_store.clone(), self.metrics.clone()).await
             }
             _ => responses::not_found(true),
         }

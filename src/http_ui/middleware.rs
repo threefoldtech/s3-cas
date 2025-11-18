@@ -3,7 +3,6 @@ use cookie::Cookie;
 use http_body_util::Full;
 use hyper::{header, Request, Response, StatusCode};
 use std::sync::Arc;
-use tracing::{debug, warn};
 
 use crate::auth::{SessionStore, UserStore};
 
@@ -56,28 +55,32 @@ impl SessionAuth {
     }
 
     /// Checks if the request has a valid session and returns user context
+    #[tracing::instrument(skip(self, req), fields(session_id, user_id, is_admin))]
     pub fn authenticate(&self, req: &Request<hyper::body::Incoming>) -> Option<AuthContext> {
         // Extract session ID from cookie
         let session_id = self.extract_session_id(req)?;
+        tracing::Span::current().record("session_id", &tracing::field::display(&session_id));
 
         // Validate session and get user_id
         let user_id = self.session_store.get_session(&session_id)?;
+        tracing::Span::current().record("user_id", &tracing::field::display(&user_id));
 
         // Get user details
         match self.user_store.get_user_by_id(&user_id) {
             Ok(Some(user)) => {
-                debug!("Authenticated user: {} (admin: {})", user_id, user.is_admin);
+                tracing::Span::current().record("is_admin", user.is_admin);
+                tracing::debug!(user_id = %user_id, is_admin = user.is_admin, "Authenticated user");
                 Some(AuthContext {
                     user_id,
                     is_admin: user.is_admin,
                 })
             }
             Ok(None) => {
-                warn!("Session valid but user not found: {}", user_id);
+                tracing::warn!(user_id = %user_id, "Session valid but user not found");
                 None
             }
             Err(e) => {
-                warn!("Error fetching user: {}", e);
+                tracing::warn!(error = %e, "Error fetching user");
                 None
             }
         }
@@ -150,7 +153,7 @@ impl SessionAuth {
 
 /// Helper to check if a path is public (doesn't require authentication)
 pub fn is_public_path(path: &str) -> bool {
-    matches!(path, "/login" | "/health")
+    matches!(path, "/login" | "/setup-admin" | "/health")
 }
 
 /// Helper to check if a path requires admin privileges

@@ -3194,6 +3194,7 @@ dependencies = [
  "s3s-aws",
  "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "tokio",
  "toml",

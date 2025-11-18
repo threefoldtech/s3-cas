@@ -3,9 +3,45 @@ use tracing::{debug, warn};
 
 use s3s::dto::*;
 use s3s::{s3_error, S3Request, S3Response, S3Result, S3};
+use s3s::auth::S3Auth;
 
 use crate::auth::{UserRouter, UserStore};
 use crate::s3fs::S3FS;
+
+/// DynamicS3Auth provides S3 authentication by querying UserStore dynamically
+/// instead of storing credentials in memory
+pub struct DynamicS3Auth {
+    user_store: Arc<UserStore>,
+}
+
+impl DynamicS3Auth {
+    pub fn new(user_store: Arc<UserStore>) -> Self {
+        Self { user_store }
+    }
+}
+
+#[async_trait::async_trait]
+impl S3Auth for DynamicS3Auth {
+    async fn get_secret_key(&self, access_key: &str) -> Result<s3s::auth::SecretKey, s3s::S3Error> {
+        debug!("Looking up secret key for access_key: {}", access_key);
+
+        // Look up user by S3 access key
+        match self.user_store.get_user_by_s3_key(access_key) {
+            Ok(Some(user)) => {
+                debug!("Found user {} for access_key: {}", user.user_id, access_key);
+                Ok(user.s3_secret_key.into())
+            }
+            Ok(None) => {
+                warn!("Unknown access_key: {}", access_key);
+                Err(s3_error!(InvalidAccessKeyId))
+            }
+            Err(e) => {
+                warn!("Database error looking up access_key {}: {}", access_key, e);
+                Err(s3_error!(InternalError))
+            }
+        }
+    }
+}
 
 /// S3UserRouter wraps UserRouter to provide per-request S3 routing
 /// based on the access_key in the request credentials
@@ -48,8 +84,8 @@ impl S3UserRouter {
 
         debug!("Routing S3 request to user: {}", user.user_id);
 
-        // Get CasFS instance for this user using their access_key
-        let casfs = match self.user_router.get_casfs(access_key) {
+        // Get CasFS instance for this user (lazy initialization)
+        let casfs = match self.user_router.get_casfs_by_user_id(&user.user_id) {
             Ok(cf) => cf,
             Err(e) => {
                 warn!("Failed to get CasFS for user {}: {}", user.user_id, e);

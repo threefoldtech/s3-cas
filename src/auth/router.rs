@@ -1,18 +1,18 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use tracing::debug;
 
 use crate::cas::{CasFS, SharedBlockStore, StorageEngine};
 use crate::metastore::Durability;
 use crate::metrics::SharedMetrics;
-
-use super::user_config::{UserAuth, UsersConfig};
 
 /// Error types for user routing
 #[derive(Debug)]
 pub enum RouterError {
     UnknownUser(String),
     AuthenticationFailed,
+    CreationFailed(String),
 }
 
 impl std::fmt::Display for RouterError {
@@ -20,24 +20,29 @@ impl std::fmt::Display for RouterError {
         match self {
             RouterError::UnknownUser(key) => write!(f, "Unknown user with access key: {}", key),
             RouterError::AuthenticationFailed => write!(f, "Authentication failed"),
+            RouterError::CreationFailed(msg) => write!(f, "Failed to create CasFS: {}", msg),
         }
     }
 }
 
 impl std::error::Error for RouterError {}
 
-/// UserRouter manages per-user CasFS instances and request routing
+/// UserRouter manages per-user CasFS instances with lazy initialization
 pub struct UserRouter {
-    auth: UserAuth,
-    casfs_instances: HashMap<String, Arc<CasFS>>,
+    shared_block_store: Arc<SharedBlockStore>,
+    casfs_cache: Arc<RwLock<HashMap<String, Arc<CasFS>>>>,
+    fs_root: PathBuf,
+    meta_root: PathBuf,
     metrics: SharedMetrics,
+    storage_engine: StorageEngine,
+    inlined_metadata_size: Option<usize>,
+    durability: Option<Durability>,
 }
 
 impl UserRouter {
-    /// Create a new UserRouter with pre-created CasFS instances for all users
+    /// Create a new UserRouter with lazy CasFS initialization
     ///
     /// # Arguments
-    /// * `users_config` - User configuration from users.toml
     /// * `shared_block_store` - Shared block store (singleton)
     /// * `fs_root` - Root directory for block storage
     /// * `meta_root` - Root directory for metadata
@@ -46,8 +51,7 @@ impl UserRouter {
     /// * `inlined_metadata_size` - Maximum size for inlined metadata
     /// * `durability` - Durability level for transactions
     pub fn new(
-        users_config: UsersConfig,
-        shared_block_store: &SharedBlockStore,
+        shared_block_store: Arc<SharedBlockStore>,
         fs_root: PathBuf,
         meta_root: PathBuf,
         metrics: SharedMetrics,
@@ -55,56 +59,41 @@ impl UserRouter {
         inlined_metadata_size: Option<usize>,
         durability: Option<Durability>,
     ) -> Self {
-        let auth = UserAuth::new(users_config.clone());
-        let mut casfs_instances = HashMap::new();
-
-        // Create CasFS instance for each user at startup
-        for user_id in auth.user_ids() {
-            let user_meta_path = meta_root.join(format!("user_{}", user_id));
-
-            let casfs = CasFS::new_multi_user(
-                fs_root.clone(),
-                user_meta_path,
-                shared_block_store.block_tree(),
-                shared_block_store.path_tree(),
-                shared_block_store.multipart_tree(),
-                shared_block_store.meta_store(),
-                metrics.clone(),
-                storage_engine,
-                inlined_metadata_size,
-                durability,
-            );
-
-            casfs_instances.insert(user_id.clone(), Arc::new(casfs));
-        }
-
         Self {
-            auth,
-            casfs_instances,
+            shared_block_store,
+            casfs_cache: Arc::new(RwLock::new(HashMap::new())),
+            fs_root,
+            meta_root,
             metrics,
+            storage_engine,
+            inlined_metadata_size,
+            durability,
         }
     }
 
-    /// Get CasFS instance for a given access key
-    ///
-    /// # Arguments
-    /// * `access_key` - S3 access key from request
-    ///
-    /// # Returns
-    /// * `Result<Arc<CasFS>, RouterError>` - CasFS instance or error
-    pub fn get_casfs(&self, access_key: &str) -> Result<Arc<CasFS>, RouterError> {
-        let user_id = self
-            .auth
-            .get_user_id(access_key)
-            .ok_or_else(|| RouterError::UnknownUser(access_key.to_string()))?;
+    /// Creates a new CasFS instance for a user (called internally on cache miss)
+    fn create_casfs_for_user(&self, user_id: &str) -> Arc<CasFS> {
+        debug!("Creating new CasFS instance for user: {}", user_id);
 
-        self.casfs_instances
-            .get(user_id)
-            .cloned()
-            .ok_or(RouterError::AuthenticationFailed)
+        let user_meta_path = self.meta_root.join(format!("user_{}", user_id));
+
+        let casfs = CasFS::new_multi_user(
+            self.fs_root.clone(),
+            user_meta_path,
+            self.shared_block_store.block_tree(),
+            self.shared_block_store.path_tree(),
+            self.shared_block_store.multipart_tree(),
+            self.shared_block_store.meta_store(),
+            self.metrics.clone(),
+            self.storage_engine,
+            self.inlined_metadata_size,
+            self.durability,
+        );
+
+        Arc::new(casfs)
     }
 
-    /// Get CasFS instance by user_id (for HTTP UI use)
+    /// Get CasFS instance by user_id with lazy initialization
     ///
     /// # Arguments
     /// * `user_id` - User identifier
@@ -112,15 +101,27 @@ impl UserRouter {
     /// # Returns
     /// * `Result<Arc<CasFS>, RouterError>` - CasFS instance or error
     pub fn get_casfs_by_user_id(&self, user_id: &str) -> Result<Arc<CasFS>, RouterError> {
-        self.casfs_instances
-            .get(user_id)
-            .cloned()
-            .ok_or_else(|| RouterError::UnknownUser(user_id.to_string()))
-    }
+        // First try with read lock (fast path)
+        {
+            let cache = self.casfs_cache.read().unwrap();
+            if let Some(casfs) = cache.get(user_id) {
+                return Ok(casfs.clone());
+            }
+        }
 
-    /// Get UserAuth for authentication checks
-    pub fn auth(&self) -> &UserAuth {
-        &self.auth
+        // Cache miss - create new instance with write lock
+        let mut cache = self.casfs_cache.write().unwrap();
+
+        // Double-check after acquiring write lock (another thread might have created it)
+        if let Some(casfs) = cache.get(user_id) {
+            return Ok(casfs.clone());
+        }
+
+        // Create new CasFS for this user
+        let casfs = self.create_casfs_for_user(user_id);
+        cache.insert(user_id.to_string(), casfs.clone());
+
+        Ok(casfs)
     }
 
     /// Get SharedMetrics for metrics collection

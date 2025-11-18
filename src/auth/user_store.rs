@@ -293,7 +293,8 @@ impl UserStore {
 
     /// Counts the number of users
     pub fn count_users(&self) -> Result<usize, MetaError> {
-        self.store.num_keys(USERS_TREE)
+        let users_tree = self.store.tree_ext_open(USERS_TREE)?;
+        Ok(users_tree.iter_all().count())
     }
 }
 

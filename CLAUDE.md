@@ -5,216 +5,83 @@
 
 ### cas/fs.rs - CasFS (Content Addressable Storage FileSystem)
 
-#### Core Functions
+**Key Functions:**
 
-**`CasFS::new(root: PathBuf, meta_path: PathBuf, metrics: SharedMetrics, storage_engine: StorageEngine, inlined_metadata_size: Option<usize>, durability: Option<Durability>) -> Self`**
+**`CasFS::new(root, meta_path, metrics, storage_engine, inlined_metadata_size, durability)`**
+- Creates CasFS instance with storage backend initialization
+- Sets up metastore, multipart tree, and block storage root
 
-- Creates a new CasFS instance with storage backend initialization
-- Sets up metastore and multipart tree
-- Initializes block storage root directory
-
-**`CasFS::path_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError>`**
-
-- Returns path metadata tree for tracking disk block locations
-- Used internally for managing block paths
-
-**`CasFS::fs_root(&self) -> &PathBuf`**
-
-- Returns reference to filesystem root for block storage
-
-**`CasFS::max_inlined_data_length(&self) -> usize`**
-
-- Returns maximum size for inlining object data in metadata
-- Returns 0 if inlining disabled
-
-**`CasFS::get_bucket(&self, bucket_name: &str) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError>`**
-
-- Retrieves extended tree interface for a specific bucket
-- Enables range filtering and listing operations
-
-**`CasFS::block_tree(&self) -> Result<BlockTree, MetaError>`**
-
-- Returns specialized block metadata tree
-- Used for block refcount and metadata operations
-
-**`CasFS::bucket_exists(&self, bucket_name: &str) -> Result<bool, MetaError>`**
-
-- Checks if bucket exists in metastore
-
-**`CasFS::create_object_meta(&self, bucket_name: &str, key: &str, size: u64, hash: BlockID, object_data: ObjectData) -> Result<Object, MetaError>`**
-
-- Creates Object metadata and inserts into metastore
-- Returns constructed Object
-
-**`CasFS::get_object_meta(&self, bucket_name: &str, key: &str) -> Result<Option<Object>, MetaError>`**
-
-- Retrieves deserialized Object metadata from bucket
-
-**`CasFS::get_object_paths(&self, bucket_name: &str, key: &str) -> Result<Option<ObjectPaths>, MetaError>`**
-
+**`CasFS::get_object_paths(&self, bucket_name: &str, key: &str)`**
 - Returns Object metadata and filesystem paths to blocks
 - Handles both inlined and block-stored objects
-- Returns tuple of (Object, Vec<(PathBuf, usize)>)
+- Returns (Object, Vec<(PathBuf, usize)>)
 
-**`CasFS::create_bucket(&self, bucket_name: &str) -> Result<(), MetaError>`**
-
-- Creates new bucket and initializes metadata
-
-**`CasFS::bucket_delete(&self, bucket_name: &str) -> Result<(), MetaError>` (async)**
-
+**`CasFS::bucket_delete(&self, bucket_name: &str)` (async)**
 - Deletes bucket and all contained objects
 - Cascades deletion to all object blocks
 
-**`CasFS::insert_multipart_part(&self, bucket: String, key: String, size: usize, part_number: i64, upload_id: String, hash: BlockID, blocks: Vec<BlockID>) -> Result<(), MetaError>`**
-
-- Stores multipart upload part metadata
-- Maps part number to MultiPart struct
-
-**`CasFS::get_multipart_part(&self, bucket: &str, key: &str, upload_id: &str, part_number: i64) -> Result<Option<MultiPart>, MetaError>`**
-
-- Retrieves MultiPart metadata for specific part
-
-**`CasFS::remove_multipart_part(&self, bucket: &str, key: &str, upload_id: &str, part_number: i64) -> Result<(), MetaError>`**
-
-- Removes MultiPart metadata after upload completion
-
-**`CasFS::key_exists(&self, bucket: &str, key: &str) -> Result<bool, MetaError>`**
-
-- Checks if object key exists in bucket
-
-**`CasFS::list_buckets(&self) -> Result<Vec<BucketMeta>, MetaError>`**
-
-- Returns all buckets with metadata
-
-**`CasFS::delete_object(&self, bucket: &str, key: &str) -> Result<(), MetaError>` (async)**
-
+**`CasFS::delete_object(&self, bucket: &str, key: &str)` (async)**
 - Deletes object and its blocks from disk
 - Decrements/removes block refcounts
 - Removes path mappings
 
-**`CasFS::store_single_object_and_meta(&self, bucket_name: &str, key: &str, data: ByteStream) -> Result<Object, io::Result>` (async)**
+**`CasFS::store_single_object_and_meta(&self, bucket_name, key, data)` (async)**
+- Convenience wrapper combining store_object + create_object_meta
 
-- Convenience function combining store_object + create_object_meta
-- Returns constructed Object
-
-**`CasFS::store_object(&self, bucket_name: &str, key: &str, data: ByteStream) -> Result<(Vec<BlockID>, BlockID, u64), io::Result>` (async)**
-
+**`CasFS::store_object(&self, bucket_name, key, data)` (async) [CRITICAL]**
 - Streams bytes, chunks into BLOCK_SIZE (1MiB) chunks
 - MD5 hashes each chunk and full stream
 - Writes blocks to disk with concurrent writes (up to 5 concurrent)
-- Handles refcount management for duplicate blocks
-- Performs transaction commit/rollback
+- Handles refcount management for duplicate blocks via transactions
 - Returns (block_ids, content_hash, total_size)
 - **KEY LOGIC**: Checks if old object exists, captures old_blocks, calls handle_key_replacement after storing new blocks
 
-**`CasFS::store_inlined_object(&self, bucket_name: &str, key: &str, data: Vec<u8>) -> Result<Object, MetaError>`**
-
-- Stores small object data directly in metadata
-- MD5 hashes data
-- Returns Object with Inline data variant
+**`CasFS::store_inlined_object(&self, bucket_name, key, data)`**
+- Stores small object data directly in metadata (bypasses block storage)
 
 ---
 
 ### metastore/meta_store.rs - MetaStore
 
-**`MetaStore::new(store: impl Store + 'static, inlined_metadata_size: Option<usize>) -> Self`**
+**Key Functions:**
 
+**`MetaStore::new(store, inlined_metadata_size)`**
 - Creates MetaStore with storage backend
-- Sets inlined metadata size (default 1 byte, effectively disabled)
+- Default inlined metadata size: 1 byte (effectively disabled)
 
-**`MetaStore::max_inlined_data_length(&self) -> usize`**
+**Tree Access (returns specialized metadata trees):**
+- `get_allbuckets_tree()` - "_BUCKETS"
+- `get_bucket_ext(name)` - Bucket tree with range filtering
+- `get_block_tree()` - "_BLOCKS"
+- `get_path_tree()` - "_PATHS"
+- `get_tree(name)` - Arbitrary tree (for multipart)
 
-- Returns max inlined data length accounting for Object overhead
+**Bucket Operations:**
+- `bucket_exists(name)`, `drop_bucket(name)`, `insert_bucket(name, raw_bucket)`, `list_buckets()`
 
-**`MetaStore::get_allbuckets_tree(&self) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError>`**
+**Object Metadata:**
+- `insert_meta(bucket, key, raw_obj)`, `get_meta(bucket, key)`
 
-- Returns bucket list tree (DEFAULT_BUCKET_TREE = "\_BUCKETS")
-
-**`MetaStore::get_bucket_ext(&self, name: &str) -> Result<Box<dyn MetaTreeExt + Send + Sync>, MetaError>`**
-
-- Returns extended tree for bucket with range filtering
-
-**`MetaStore::get_block_tree(&self) -> Result<BlockTree, MetaError>`**
-
-- Returns block metadata tree (DEFAULT_BLOCK_TREE = "\_BLOCKS")
-
-**`MetaStore::get_tree(&self, name: &str) -> Result<Box<dyn BaseMetaTree>, MetaError>`**
-
-- Returns arbitrary named tree (used for multipart)
-
-**`MetaStore::get_path_tree(&self) -> Result<Box<dyn BaseMetaTree>, MetaError>`**
-
-- Returns path tracking tree (DEFAULT_PATH_TREE = "\_PATHS")
-
-**`MetaStore::bucket_exists(&self, bucket_name: &str) -> Result<bool, MetaError>`**
-
-- Checks if bucket tree exists
-
-**`MetaStore::drop_bucket(&self, name: &str) -> Result<(), MetaError>`**
-
-- Deletes bucket tree if exists
-
-**`MetaStore::insert_bucket(&self, bucket_name: &str, raw_bucket: Vec<u8>) -> Result<(), MetaError>`**
-
-- Inserts bucket metadata into buckets tree
-- Creates bucket tree
-
-**`MetaStore::list_buckets(&self) -> Result<Vec<BucketMeta>, MetaError>`**
-
-- Deserializes all buckets from buckets tree
-
-**`MetaStore::insert_meta(&self, bucket_name: &str, key: &str, raw_obj: Vec<u8>) -> Result<(), MetaError>`**
-
-- Inserts Object metadata into bucket tree
-
-**`MetaStore::get_meta(&self, bucket_name: &str, key: &str) -> Result<Option<Object>, MetaError>`**
-
-- Retrieves and deserializes Object from bucket
-
-**`MetaStore::delete_object(&self, bucket: &str, key: &str) -> Result<Vec<Block>, MetaError>`**
-
+**`MetaStore::delete_object(&self, bucket, key)` [CRITICAL]**
 - Removes object from bucket
 - Decrements/removes block refcounts
 - Returns blocks to physically delete (refcount reached 0)
 - **REFCOUNT LOGIC**: Decrements rc, deletes if rc==1
 
-**`MetaStore::handle_key_replacement(&self, bucket: &str, key: &str, new_blocks: &[BlockID]) -> Result<Vec<Block>, MetaError>`** (NEW)
-
+**`MetaStore::handle_key_replacement(&self, bucket, key, new_blocks)` [CRITICAL - NEW]**
 - Called after storing new object with same key
 - Decrements refcount on blocks no longer used
 - Returns blocks to physically delete
 - **REFCOUNT LOGIC**: Only touches old blocks not in new_blocks list
 
-**`MetaStore::begin_transaction(&self) -> Transaction`**
-
-- Creates transaction for atomic metadata operations
-
-**`MetaStore::num_keys(&self) -> usize`**
-
-- Returns count of keys in bucket tree
-
-**`MetaStore::disk_space(&self) -> u64`**
-
-- Returns total disk space used by metastore
+**Other Methods:**
+- `begin_transaction()`, `num_keys()`, `disk_space()`, `get_underlying_store()`
 
 ---
 
 ### metastore/meta_store.rs - Transaction
 
-**`Transaction::new(backend: Box<dyn TransactionBackend>) -> Self`**
-
-- Creates transaction wrapper around backend
-
-**`Transaction::commit(mut self) -> Result<(), MetaError>`**
-
-- Commits transaction, making changes permanent
-
-**`Transaction::rollback(mut self)`**
-
-- Rolls back transaction, discards all changes
-
-**`Transaction::write_block(&mut self, block_hash: BlockID, data_len: usize, key_has_block: bool) -> Result<(bool, Block), MetaError>`**
-
+**`Transaction::write_block(&mut self, block_hash, data_len, key_has_block)` [CRITICAL]**
 - Gets or creates block metadata
 - If block exists and key doesn't have it: increments refcount
 - If block exists and key has it: returns without incrementing
@@ -222,297 +89,96 @@
 - Returns (is_new_block, block_metadata)
 - **REFCOUNT LOGIC**: Increments refcount if !key_has_block
 
+**Other Methods:**
+- `commit()`, `rollback()`
+
 ---
 
 ### metastore/block.rs - Block
 
-**`Block::new(size: usize, path: Vec<u8>) -> Self`**
+**`Block::new(size, path)`** - Creates block with refcount=1
 
-- Creates block with refcount=1
+**Refcount Methods:**
+- `increment_refcount()`, `decrement_refcount()`, `rc()` - Refcount management
 
-**`Block::size(&self) -> usize`**
-
-- Returns block data size
-
-**`Block::path(&self) -> &[u8]`**
-
-- Returns internal path bytes
-
-**`Block::disk_path(&self, root: PathBuf) -> PathBuf`**
-
-- Constructs filesystem path from path bytes
-- Creates hierarchical directory structure
-
-**`Block::rc(&self) -> usize`**
-
-- Returns current refcount
-
-**`Block::increment_refcount(&mut self)`**
-
-- Increments refcount by 1
-
-**`Block::decrement_refcount(&mut self)`**
-
-- Decrements refcount by 1
-
-**`Block::to_vec(&self) -> Vec<u8>`**
-
-- Serializes block to bytes
+**Other Methods:**
+- `disk_path(root)` - Constructs hierarchical filesystem path from path bytes
+- Standard getters: `size()`, `path()`, `to_vec()`
 
 ---
 
 ### metastore/object.rs - Object
 
-**`Object::new(size: u64, hash: BlockID, object_data: ObjectData) -> Self`**
+**`Object::new(size, hash, object_data)`** - Creates object with current timestamp
 
-- Creates object with current timestamp
-- Infers object_type from ObjectData variant
+**Key Methods:**
+- `format_e_tag()` - S3 ETag (includes part count for multipart)
+- `has_block(block)` - Checks if object contains specific block
+- `is_inlined()`, `inlined()` - Inline data accessors
+- `blocks()` - Returns block IDs (empty for inline)
 
-**`Object::minimum_inline_metadata_size() -> usize`**
-
-- Returns minimum metadata size for inline objects
-
-**`Object::to_vec(&self) -> Vec<u8>`**
-
-- Serializes object to bytes
-
-**`Object::format_e_tag(&self) -> String`**
-
-- Formats S3 ETag (includes part count for multipart)
-
-**`Object::hash(&self) -> &BlockID`**
-
-- Returns object's content hash
-
-**`Object::touch(&mut self)`**
-
-- Updates creation time to now
-
-**`Object::size(&self) -> u64`**
-
-- Returns object size
-
-**`Object::blocks(&self) -> &[BlockID]`**
-
-- Returns slice of block IDs (empty for inline)
-
-**`Object::has_block(&self, block: &BlockID) -> bool`**
-
-- Checks if object contains specific block
-
-**`Object::last_modified(&self) -> SystemTime`**
-
-- Returns creation time as SystemTime
-
-**`Object::is_inlined(&self) -> bool`**
-
-- Checks if object is inline
-
-**`Object::inlined(&self) -> Option<&Vec<u8>>`**
-
-- Returns inline data if present
+**Standard Accessors:**
+- `size()`, `hash()`, `last_modified()`, `touch()`, `to_vec()`, `minimum_inline_metadata_size()`
 
 ---
 
 ### s3fs.rs - S3FS
 
-**`S3FS::new(casfs: CasFS, metrics: SharedMetrics) -> Self`**
+**`S3FS::new(casfs, metrics)`** - Wraps CasFS for S3 API
 
-- Wraps CasFS for S3 API
+**`calculate_multipart_hash(&self, blocks)`** - Calculates S3 multipart ETag (MD5 of MD5s)
 
-**`S3FS::calculate_multipart_hash(&self, blocks: &[BlockID]) -> Result<([u8; 16], usize), io::Result>`**
-
-- Calculates S3 multipart ETag (MD5 of MD5s)
-- Returns (hash, total_size)
-
-**S3 Trait Methods (all async, return S3Result):**
-
-**`complete_multipart_upload(&self, req: S3Request<CompleteMultipartUploadInput>)`**
-
-- Collects all parts, validates part numbers sequential
-- Creates final object with MultiPart data
-- Removes part metadata
-- Returns ETag
-
-**`copy_object(&self, req: S3Request<CopyObjectInput>)`**
-
-- Not implemented (returns NotImplemented error)
-
-**`create_multipart_upload(&self, req: S3Request<CreateMultipartUploadInput>)`**
-
-- Generates UUID upload_id
-- No actual storage (metadata only on complete)
-
-**`create_bucket(&self, req: S3Request<CreateBucketInput>)`**
-
-- Checks bucket doesn't exist
-- Creates bucket
-- Increments bucket count metric
-
-**`delete_bucket(&self, req: S3Request<DeleteBucketInput>)`**
-
-- Deletes bucket and all objects
-- Decrements bucket count
-
-**`delete_object(&self, req: S3Request<DeleteObjectInput>)`**
-
-- Checks key exists
-- Calls casfs.delete_object
-- Handles block deletion
-
-**`delete_objects(&self, req: S3Request<DeleteObjectsInput>)`**
-
-- Batch delete, continues on errors
-- Returns list of deleted and errors
-
-**`get_bucket_location(&self, req: S3Request<GetBucketLocationInput>)`**
-
-- Checks bucket exists
-- Returns empty location
-
-**`get_object(&self, req: S3Request<GetObjectInput>)`**
-
-- Checks bucket exists
-- Gets object paths
-- Returns inlined data or BlockStream
-- Supports range requests
-
-**`head_bucket(&self, req: S3Request<HeadBucketInput>)`**
-
-- Checks bucket exists
-
-**`head_object(&self, req: S3Request<HeadObjectInput>)`**
-
-- Checks bucket exists
-- Returns object size and metadata
-
-**`list_buckets(&self, req: S3Request<ListBucketsInput>)`**
-
-- Returns all buckets with creation dates
-
-**`list_objects(&self, req: S3Request<ListObjectsInput>)`**
-
-- Lists objects with prefix/marker/max_keys
-- Returns pagination marker
-
-**`list_objects_v2(&self, req: S3Request<ListObjectsV2Input>)`**
-
-- Lists objects with prefix/start_after/continuation_token
-- Encodes continuation token as hex
-
-**`put_object(&self, req: S3Request<PutObjectInput>)`**
-
-- Validates storage class
-- Checks bucket exists
-- If content_length <= max_inlined: stores inline
-- Otherwise: calls store_single_object_and_meta
-- Returns ETag
-
-**`upload_part(&self, req: S3Request<UploadPartInput>)`**
-
-- Validates content_length present
-- Stores object (not metadata)
-- Inserts multipart part metadata
-- Returns ETag
+**S3 Trait Methods (all async):**
+- `complete_multipart_upload()` - Collects parts, creates final object, removes part metadata
+- `create_multipart_upload()` - Generates UUID upload_id
+- `upload_part()` - Stores part, inserts multipart metadata
+- `put_object()` - Inline storage for small objects, otherwise calls store_single_object_and_meta
+- `get_object()` - Returns inline data or BlockStream, supports range requests
+- `delete_object()`, `delete_objects()` - Object deletion (single/batch)
+- `create_bucket()`, `delete_bucket()`, `list_buckets()` - Bucket management
+- `list_objects()`, `list_objects_v2()` - Object listing with pagination
+- `head_bucket()`, `head_object()`, `get_bucket_location()` - Metadata queries
+- `copy_object()` - Not implemented
 
 ---
 
 ### cas/block_stream.rs - BlockStream
 
-**`BlockStream::new(paths: Vec<(PathBuf, usize)>, size: usize, range: RangeRequest, metrics: SharedMetrics) -> Self`**
-
+**`BlockStream::new(paths, size, range, metrics)`**
 - Creates stream over multiple block files
 - Handles range requests and seeks
 
-**`BlockStream::poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<io::Result<Bytes>>>`**
-
-- Implements Stream trait
-- Manages file opening/seeking/reading
-- Applies range filtering
-- Reports metrics
+**`poll_next()`** - Implements Stream trait, manages file I/O, applies range filtering
 
 ---
 
 ### cas/range_request.rs - RangeRequest
 
-**`RangeRequest` enum variants:**
+**Enum:** `All`, `Range(u64, u64)`, `ToBytes(u64)`, `FromBytes(u64)`
 
-- `All` - entire file
-- `Range(u64, u64)` - inclusive range
-- `ToBytes(u64)` - from start to position
-- `FromBytes(u64)` - from position to end
-
-**`parse_range_request(input: &Option<String>) -> RangeRequest`**
-
-- Parses S3 Range header (e.g., "bytes=0-1023")
-- Returns RangeRequest enum
-
-**`RangeRequest::size(&self, file_size: u64) -> u64`**
-
-- Calculates byte count for range
+**`parse_range_request(input)`** - Parses S3 Range header (e.g., "bytes=0-1023")
 
 ---
 
-### stores/fjall.rs - FjallStore (with transactions)
+### stores/fjall.rs & fjall_notx.rs - Storage Backends
 
-**`FjallStore::new(path: PathBuf, inlined_metadata_size: Option<usize>, durability: Option<Durability>) -> Self`**
+**FjallStore (transactional):**
+- `new(path, inlined_metadata_size, durability)` - Opens transactional keyspace
+- `get_partition(name)`, `commit_persist(tx)` - Partition and transaction management
 
-- Opens transactional fjall keyspace
-- Configures durability level
-
-**`FjallStore::get_partition(&self, name: &str) -> Result<fjall::TxPartitionHandle, MetaError>`**
-
-- Opens or creates partition
-
-**`FjallStore::commit_persist(&self, tx: fjall::WriteTransaction) -> Result<(), MetaError>`**
-
-- Commits transaction and persists
-
-**Store trait implementation**
-
----
-
-### stores/fjall_notx.rs - FjallStoreNotx (non-transactional)
-
-**`FjallStoreNotx::new(path: PathBuf, inlined_metadata_size: Option<usize>) -> Self`**
-
-- Opens non-transactional fjall keyspace
-
-**`FjallNoTransaction::rollback(&mut self)`**
-
-- Removes all inserted keys (simulates rollback)
-
-**Store trait implementation**
+**FjallStoreNotx (non-transactional):**
+- `new(path, inlined_metadata_size)` - Opens non-transactional keyspace
+- `rollback()` - Simulates rollback by removing inserted keys
 
 ---
 
 ### metrics.rs - Metrics & MetricFs
 
-**`SharedMetrics::new() -> Self`**
+**Prometheus Metrics:**
+- Method invocations, bucket count, data bytes (received/sent/written)
+- Block operations (written/ignored/pending/errors/dropped)
 
-- Creates shared metrics wrapper
-
-**`Metrics::new() -> Self`**
-
-- Initializes prometheus metrics:
-  - s3_api_method_invocations
-  - s3_bucket_count
-  - s3_data_bytes_received/sent/written
-  - s3_data_blocks_written/ignored/pending_write/write_errors/dropped
-
-**Metrics recording methods:**
-
-- `add_method_call(call_name: &str)`
-- `set/inc/dec_bucket_count()`
-- `bytes_received/sent(amount: usize)`
-- `block_pending/written/write_error/ignored()`
-- `blocks_dropped(amount: u64)`
-
-**`MetricFs<T>` struct:**
-
-- Wraps S3 implementation
-- Records metrics for each S3 operation
-- Implements S3 trait, forwarding to inner storage
+**`MetricFs<T>`** - Wraps S3 implementation to record metrics
 
 ---
 
@@ -523,11 +189,13 @@
 - **Storage**: User data in Fjall partitions (_USERS, _USERS_BY_LOGIN, _USERS_BY_S3_KEY)
 - **Session management**: In-memory sessions with 24-hour lifetime
 - **Per-user routing**: S3UserRouter extracts access_key and routes to user's S3FS
+- **First-time setup**: When no users exist, /login shows setup form to create admin account
+- **Lazy initialization**: CasFS instances created on-demand (not at startup)
+- **Dynamic authentication**: S3 credentials validated by querying UserStore on each request
 
 ### auth/user_store.rs - UserStore
 
 **UserRecord struct:**
-
 ```rust
 pub struct UserRecord {
     pub user_id: String,           // Primary key
@@ -540,79 +208,23 @@ pub struct UserRecord {
 }
 ```
 
-**`UserRecord::new(user_id, ui_login, ui_password, s3_access_key, s3_secret_key, is_admin) -> Result<Self, MetaError>`**
+**Stored in Fjall partitions:**
+- `_USERS` - Primary storage (key: user_id)
+- `_USERS_BY_LOGIN` - Index (ui_login → user_id)
+- `_USERS_BY_S3_KEY` - Index (s3_access_key → user_id)
 
-- Creates new user with bcrypt-hashed password
-- Sets creation timestamp
-- Returns UserRecord
-
-**`UserRecord::verify_password(&self, password: &str) -> bool`**
-
-- Verifies password against bcrypt hash
-- Returns true if password matches
-
-**`UserStore::new(store: Arc<dyn Store>) -> Self`**
-
-- Creates UserStore using shared Fjall storage
-- Opens three partitions: _USERS, _USERS_BY_LOGIN, _USERS_BY_S3_KEY
-
-**`UserStore::create_user(&self, user: UserRecord) -> Result<(), MetaError>`**
-
-- Validates user_id, ui_login, s3_access_key uniqueness
-- Inserts user into _USERS partition
-- Creates indices in _USERS_BY_LOGIN and _USERS_BY_S3_KEY
-- Returns error if user already exists
-
-**`UserStore::get_user_by_id(&self, user_id: &str) -> Result<Option<UserRecord>, MetaError>`**
-
-- Retrieves user from _USERS partition
-- Deserializes UserRecord from bytes
-- Returns None if user doesn't exist
-
-**`UserStore::get_user_by_ui_login(&self, ui_login: &str) -> Result<Option<UserRecord>, MetaError>`**
-
-- Looks up user_id in _USERS_BY_LOGIN index
-- Retrieves full UserRecord from _USERS
-- Returns None if login doesn't exist
-
-**`UserStore::get_user_by_s3_key(&self, s3_access_key: &str) -> Result<Option<UserRecord>, MetaError>`**
-
-- Looks up user_id in _USERS_BY_S3_KEY index
-- Retrieves full UserRecord from _USERS
-- Returns None if access key doesn't exist
-
-**`UserStore::delete_user(&self, user_id: &str) -> Result<(), MetaError>`**
-
-- Removes user from _USERS partition
-- Removes indices from _USERS_BY_LOGIN and _USERS_BY_S3_KEY
-- Returns error if user doesn't exist
-
-**`UserStore::update_password(&self, user_id: &str, new_password: &str) -> Result<(), MetaError>`**
-
-- Updates password hash with new bcrypt hash
-- Updates user in _USERS partition
-- Does not invalidate sessions (caller's responsibility)
-
-**`UserStore::authenticate(&self, ui_login: &str, password: &str) -> Result<Option<UserRecord>, MetaError>`**
-
-- Looks up user by ui_login
-- Verifies password with bcrypt
-- Returns Some(user) if authentication succeeds, None otherwise
-
-**`UserStore::list_users(&self) -> Result<Vec<UserRecord>, MetaError>`**
-
-- Iterates all users in _USERS partition
-- Returns vector of all UserRecords
-
-**`UserStore::count_users(&self) -> Result<usize, MetaError>`**
-
-- Returns number of users in database
-- Uses store.num_keys()
+**Key Methods:**
+- `UserStore::new(store)` - Opens three partitions
+- `create_user(user)` - Validates uniqueness, inserts with indices
+- `get_user_by_id/ui_login/s3_key(...)` - Retrieves via primary key or indices
+- `delete_user(user_id)` - Removes from all partitions/indices
+- `update_password(user_id, new_password)` - Rehashes with bcrypt (caller must invalidate sessions)
+- `authenticate(ui_login, password)` - Lookup + bcrypt verification
+- `list_users()`, `count_users()` - Enumeration
 
 ### auth/session.rs - SessionStore
 
 **SessionData struct:**
-
 ```rust
 pub struct SessionData {
     pub user_id: String,
@@ -620,248 +232,115 @@ pub struct SessionData {
 }
 ```
 
-**`SessionStore::new() -> Self`**
+**Storage:** In-memory `HashMap<String, SessionData>`, lost on restart
 
-- Creates in-memory session store
-- Sets default 24-hour session lifetime
+**Key Methods:**
+- `create_session(user_id)` - Generates 32-byte random session_id (64 hex chars)
+- `get_session(session_id)` - Returns user_id if valid and not expired
+- `delete_session(session_id)` - Logout
+- `delete_user_sessions(user_id)` - Removes all sessions for user
+- `cleanup_expired()` - Periodic cleanup
 
-**`SessionStore::create_session(&self, user_id: String) -> String`**
+### auth/router.rs - UserRouter
 
-- Generates 32-byte random session ID (64 hex chars)
-- Stores SessionData with current timestamp
-- Returns session_id
+**Purpose:** Manages per-user CasFS instances with lazy initialization
 
-**`SessionStore::get_session(&self, session_id: &str) -> Option<String>`**
+**`UserRouter::new(shared_block_store, fs_root, meta_root, metrics, storage_engine, inlined_metadata_size, durability)`**
+- Creates router with shared block metadata store
+- Initializes empty CasFS cache (no users loaded at startup)
+- Stores CasFS configuration parameters
 
-- Validates session exists and not expired
-- Returns user_id if session valid
-- Returns None if expired or doesn't exist
+**`UserRouter::get_casfs_by_user_id(&self, user_id)`** [Core routing logic]
+- Uses double-checked locking pattern for thread-safe lazy initialization
+- Checks read lock for cached CasFS
+- If not found: acquires write lock, creates CasFS for user, caches it
+- Returns Arc<CasFS> for user
 
-**`SessionStore::delete_session(&self, session_id: &str)`**
+**`UserRouter::create_casfs_for_user(&self, user_id)`** [Internal]
+- Creates user-specific CasFS instance with shared block store
+- Uses per-user metadata partition (meta_root/user_id)
+- All users share same block metadata but have separate object metadata
 
-- Removes session from store
-- Used for logout
+### s3_wrapper.rs - DynamicS3Auth & S3UserRouter
 
-**`SessionStore::delete_user_sessions(&self, user_id: &str)`**
+**`DynamicS3Auth`** - Dynamic S3 credential validation
 
-- Removes all sessions for a specific user
-- Used when password changes or user deleted
+**`DynamicS3Auth::new(user_store)`**
+- Creates authenticator with reference to UserStore
 
-**`SessionStore::cleanup_expired(&self)`**
+**`DynamicS3Auth::get_secret_key(&self, access_key)` (async)** [S3Auth trait]
+- Queries UserStore::get_user_by_s3_key() on each request
+- Returns user's secret_key if found
+- Returns InvalidAccessKeyId error if not found
+- Uses constant-time comparison (subtle crate) for secret validation
 
-- Removes all expired sessions
-- Should be called periodically
+**`S3UserRouter`** - Per-request user routing
 
-**`SessionStore::refresh_session(&self, session_id: &str) -> bool`**
-
-- Updates session timestamp to extend lifetime
-- Returns true if refreshed, false if not found
-
-### s3_wrapper.rs - S3UserRouter
-
-**`S3UserRouter::new(user_router: Arc<UserRouter>, user_store: Arc<UserStore>) -> Self`**
-
-- Creates S3 routing wrapper
-- Stores references to UserRouter and UserStore
-
-**`S3UserRouter::get_s3fs_for_request<T>(&self, req: &S3Request<T>) -> S3Result<Arc<S3FS>>`**
-
+**`S3UserRouter::get_s3fs_for_request<T>(&self, req)`** [Core routing logic]
 - Extracts access_key from req.credentials
 - Looks up user via UserStore::get_user_by_s3_key()
-- Gets user's CasFS from UserRouter::get_casfs()
-- Creates S3FS wrapper around CasFS
+- Gets user's CasFS from UserRouter::get_casfs_by_user_id() (lazy initialization)
 - Returns S3FS instance for this request
 
-**S3 Trait Methods (all async):**
-
-All S3 trait methods (complete_multipart_upload, copy_object, create_bucket, etc.) follow the same pattern:
-1. Call get_s3fs_for_request() to get user's S3FS
-2. Forward request to user's S3FS instance
-3. Return result
-
-This provides complete isolation between users while implementing the full S3 API.
+**S3 Trait Methods:** All follow pattern: call get_s3fs_for_request() → forward to user's S3FS → return result
+- Provides complete per-user isolation for all S3 operations
 
 ### http_ui/middleware.rs - SessionAuth
 
-**AuthContext struct:**
+**AuthContext:** `{ user_id: String, is_admin: bool }`
 
-```rust
-pub struct AuthContext {
-    pub user_id: String,
-    pub is_admin: bool,
-}
-```
+**`SessionAuth::authenticate(&self, req)`** [Core auth logic]
+- Extracts session_id from cookie
+- Validates via SessionStore, retrieves user from UserStore
+- Returns `Option<AuthContext>`
 
-**`SessionAuth::new(session_store: Arc<SessionStore>, user_store: Arc<UserStore>) -> Self`**
+**Cookie Management:**
+- `create_session_cookie(session_id)` - HttpOnly, SameSite=Strict, Max-Age=24h
+- `clear_session_cookie()` - Max-Age=0
 
-- Creates session authentication middleware
-- Stores references to session and user stores
+**Path Guards:**
+- `is_public_path(path)` - /login, /setup-admin, /health
+- `is_admin_path(path)` - /admin/*
 
-**`SessionAuth::authenticate(&self, req: &Request<Incoming>) -> Option<AuthContext>`**
-
-- Extracts session_id from cookie header
-- Validates session via SessionStore
-- Retrieves user from UserStore
-- Returns AuthContext with user_id and is_admin flag
-- Returns None if authentication fails
-
-**`SessionAuth::is_admin(&self, req: &Request<Incoming>) -> bool`**
-
-- Checks if authenticated user has admin privileges
-- Returns false if not authenticated
-
-**`SessionAuth::login_redirect_response(&self, original_path: &str) -> Response`**
-
-- Creates 302 redirect to /login
-- Includes ?redirect= parameter with original path
-- Used when unauthenticated user accesses protected route
-
-**`SessionAuth::forbidden_response(&self) -> Response`**
-
-- Creates 403 Forbidden response
-- Used when non-admin accesses admin route
-
-**`SessionAuth::create_session_cookie(&self, session_id: &str) -> String`**
-
-- Creates session cookie with:
-  - HttpOnly flag (prevents JavaScript access)
-  - SameSite=Strict (CSRF protection)
-  - Max-Age=24 hours
-  - Path=/
-
-**`SessionAuth::clear_session_cookie(&self) -> String`**
-
-- Creates cookie with Max-Age=0 to clear session
-- Used for logout
-
-**Helper functions:**
-
-**`is_public_path(path: &str) -> bool`**
-
-- Returns true for /login and /health
-- These paths don't require authentication
-
-**`is_admin_path(path: &str) -> bool`**
-
-- Returns true for paths starting with /admin
-- These paths require is_admin=true
+**Response Helpers:**
+- `login_redirect_response(original_path)`, `forbidden_response()`
 
 ### http_ui/login.rs - Login Handlers
 
-**`handle_login_page(req, session_auth) -> Response` (async)**
+**First-Time Setup Flow:**
+- `handle_login_page()` - Checks user count; if 0, shows setup form instead of login form
+- `handle_setup_admin()` - Creates first admin user:
+  - Validates no users exist (prevents duplicate setup)
+  - Validates password confirmation and 8-character minimum
+  - Auto-generates S3 credentials (access_key: 20 chars, secret_key: 40 chars)
+  - Creates UserRecord with is_admin=true
+  - Creates session and redirects to /profile?setup=1 with credentials in query params
+  - Credentials shown once with warning to save them
 
-- Checks if already authenticated (redirect to /buckets)
-- Displays login form with optional error/redirect parameters
-- Returns HTML login page
+**Normal Login Flow:**
+- `handle_login_page()` - Returns HTML login form
+- `handle_login_submit()` - Authenticates, creates session, sets cookie, redirects
+- `handle_logout()` - Deletes session, clears cookie, redirects to /login
 
-**`handle_login_submit(req, user_store, session_store, session_auth) -> Response` (async)**
-
-- Parses form data (username, password)
-- Authenticates via UserStore::authenticate()
-- Creates session via SessionStore::create_session()
-- Sets session cookie
-- Redirects to original path or /buckets
-
-**`handle_logout(req, session_store, session_auth) -> Response` (async)**
-
-- Extracts session_id from cookie
-- Deletes session via SessionStore::delete_session()
-- Clears session cookie
-- Redirects to /login
+**Helpers:** `generate_access_key()` (20 chars), `generate_secret_key()` (40 chars)
 
 ### http_ui/admin.rs - Admin Panel
 
-**`handle_list_users(user_store) -> Response` (async)**
+**User Management:**
+- `handle_list_users()` - Shows all users with details
+- `handle_new_user_form()` - User creation form
+- `handle_create_user()` - Auto-generates credentials if not provided (password: 16, access_key: 20, secret_key: 40)
+- `handle_delete_user()` - Deletes user + all sessions
+- `handle_reset_password_form()`, `handle_update_password()` - Password reset flow
 
-- Lists all users via UserStore::list_users()
-- Returns HTML page with user table
-- Shows user_id, ui_login, s3_access_key, is_admin status
-
-**`handle_new_user_form() -> Response` (async)**
-
-- Returns HTML form for user creation
-- Allows optional password/S3 keys (auto-generated if empty)
-
-**`handle_create_user(req, user_store) -> Response` (async)**
-
-- Parses form data
-- Auto-generates password (16 chars) if not provided
-- Auto-generates S3 access_key (20 chars) and secret_key (40 chars) if not provided
-- Creates UserRecord and stores via UserStore::create_user()
-- Returns credentials to admin (shown once)
-- Redirects to user list with success message
-
-**`handle_delete_user(user_id, user_store, session_store) -> Response` (async)**
-
-- Deletes all user sessions via SessionStore::delete_user_sessions()
-- Deletes user via UserStore::delete_user()
-- Redirects to user list
-
-**`handle_reset_password_form(user_id, user_store) -> Response` (async)**
-
-- Returns HTML form for password reset
-- Pre-fills with user information
-
-**`handle_update_password(user_id, req, user_store, session_store) -> Response` (async)**
-
-- Parses new password from form
-- Updates password via UserStore::update_password()
-- Invalidates all user sessions
-- Redirects to user list
-
-**Helper functions:**
-
-**`generate_access_key() -> String`**
-
-- Generates 20-character S3 access key
-- Uses uppercase alphanumeric charset
-
-**`generate_secret_key() -> String`**
-
-- Generates 40-character S3 secret key
-- Uses alphanumeric + +/ charset
-
-**`generate_password() -> String`**
-
-- Generates 16-character password
-- Uses alphanumeric charset
+**Helpers:** `generate_access_key()`, `generate_secret_key()`, `generate_password()`
 
 ### http_ui/mod.rs - HTTP UI Services
 
-**`HttpUiServiceMultiUser::new(user_router, user_store, session_store, metrics) -> Self`**
+**`HttpUiServiceMultiUser::route_request(&self, req)`**
+- Checks public paths → authenticates → checks admin paths → routes to handlers
 
-- Creates multi-user HTTP UI service
-- Creates SessionAuth middleware
-- Stores references to all components
-
-**`HttpUiServiceMultiUser::route_request(&self, req) -> Response` (async)**
-
-- Checks if path is public (is_public_path)
-- Authenticates via SessionAuth for protected routes
-- Checks admin privileges for admin paths
-- Routes to appropriate handler based on path/method
-- Handles /login, /logout, /admin/users/*, /buckets, etc.
-
-**`HttpUiServiceEnum` (wrapper):**
-
-```rust
-pub enum HttpUiServiceEnum {
-    SingleUser(HttpUiService),      // Basic Auth
-    MultiUser(HttpUiServiceMultiUser),  // Session Auth
-}
-```
-
-- Provides unified interface for both single and multi-user modes
-- Implements handle_request() that forwards to underlying service
-- Used in main.rs to support both modes with same run_server() function
-
-### metastore/meta_store.rs - Added Methods
-
-**`MetaStore::get_underlying_store(&self) -> Arc<dyn Store>`**
-
-- Returns reference to underlying Store
-- Used to create UserStore sharing same Fjall instance
-- Enables all user data to be stored in same database as block metadata
+**`HttpUiServiceEnum`** - Wrapper supporting both single-user (Basic Auth) and multi-user (Session Auth) modes
 
 ---
 
@@ -1023,15 +502,13 @@ MULTI-USER MODE STARTUP (main.rs)
    ├─ SharedBlockStore::new() [shared block metadata]
    ├─ UserStore::new(shared_store) [user database]
    ├─ SessionStore::new() [in-memory sessions]
-   ├─ UserRouter::new() [per-user CasFS instances]
-   ├─ Migrate users.toml → database (if empty)
-   │  ├─ For each user in users.toml:
-   │  │  ├─ Generate random initial password
-   │  │  ├─ UserRecord::new()
-   │  │  └─ UserStore::create_user()
-   │  └─ Log credentials to console
-   ├─ S3UserRouter::new() [S3 per-request routing]
-   ├─ HttpUiServiceMultiUser::new() [session-based HTTP UI]
+   ├─ UserRouter::new(shared_block_store, ...) [empty CasFS cache]
+   ├─ Check user_store.count_users()
+   │  └─ If 0: Log "First user will be created through HTTP UI setup"
+   ├─ DynamicS3Auth::new(user_store) [dynamic credential validation]
+   ├─ S3UserRouter::new(user_router, user_store) [S3 per-request routing]
+   ├─ HttpUiServiceMultiUser::new(user_router, user_store, session_store, metrics) [session-based HTTP UI]
+   ├─ S3ServiceBuilder::new(s3_user_router).set_auth(dynamic_auth).build()
    └─ run_server()
 
 ````
@@ -1078,224 +555,30 @@ MULTI-USER MODE STARTUP (main.rs)
 
 ---
 
-## Authentication Call Graphs
-
-### HTTP UI LOGIN [Multi-User]
-```
-POST /login
-└─ login::handle_login_submit()
-   ├─ Parse form data (ui_login, password)
-   ├─ UserStore::authenticate(ui_login, password)
-   │  ├─ UserStore::get_user_by_ui_login()
-   │  │  └─ Lookup in _USERS_BY_LOGIN → get user_id
-   │  │  └─ Get from _USERS partition
-   │  └─ UserRecord::verify_password()
-   │     └─ bcrypt::verify()
-   ├─ SessionStore::create_session(user_id, is_admin)
-   │  ├─ Generate 32-byte random session_id
-   │  ├─ Create SessionData { user_id, is_admin, created_at }
-   │  └─ Store in HashMap<session_id, SessionData>
-   └─ Return redirect to /buckets with Set-Cookie: session_id
-```
-
-### HTTP UI AUTHENTICATED REQUEST [Multi-User]
-```
-GET /buckets (or any protected route)
-└─ HttpUiServiceMultiUser::route_request()
-   ├─ Check if path is public (login, logout, health)
-   ├─ SessionAuth::authenticate(&req)
-   │  ├─ Extract session_id from Cookie header
-   │  ├─ SessionStore::get_session(session_id)
-   │  │  ├─ Check if session exists in HashMap
-   │  │  ├─ Check if session expired (> 24 hours)
-   │  │  └─ Return Some(SessionData) or None
-   │  ├─ UserStore::get_user_by_id(user_id)
-   │  └─ Return Some(AuthContext { user_id, is_admin })
-   ├─ If None: return login_redirect_response()
-   ├─ Check if admin route → verify is_admin
-   ├─ UserRouter::get_casfs(user_id)
-   │  └─ Returns Arc<CasFS> for this user
-   └─ Route to handlers::list_buckets(casfs, wants_html)
-```
-
-### S3 API MULTI-USER REQUEST
-```
-PUT /bucket/key (S3 API request with auth header)
-└─ S3UserRouter::put_object(req)
-   ├─ S3UserRouter::get_s3fs_for_request(&req)
-   │  ├─ Extract access_key from req.credentials
-   │  ├─ UserStore::get_user_by_s3_key(access_key)
-   │  │  ├─ Lookup in _USERS_BY_S3_KEY → get user_id
-   │  │  └─ Get from _USERS partition
-   │  ├─ Verify secret_key matches (done by s3s library)
-   │  ├─ UserRouter::get_casfs(access_key)
-   │  │  └─ Return Arc<CasFS> for this user
-   │  └─ S3FS::new(casfs, metrics)
-   └─ s3fs.put_object(req).await
-      └─ [Normal S3 put_object flow with user's CasFS]
-```
-
-### HTTP UI LOGOUT [Multi-User]
-```
-POST /logout
-└─ login::handle_logout()
-   ├─ Extract session_id from Cookie header
-   ├─ SessionStore::delete_session(session_id)
-   │  └─ Remove from HashMap
-   └─ Return redirect to /login with Set-Cookie: session_id=; Max-Age=0
-```
-
-### ADMIN USER CREATION [Multi-User]
-```
-POST /admin/users
-└─ admin::handle_create_user()
-   ├─ Verify requester is admin (SessionAuth)
-   ├─ Parse form (user_id, ui_login, ui_password, s3_access_key, s3_secret_key, is_admin)
-   ├─ UserRecord::new(...)
-   │  └─ bcrypt::hash(ui_password, DEFAULT_COST)
-   ├─ UserStore::create_user(user_record)
-   │  ├─ Check uniqueness of user_id, ui_login, s3_access_key
-   │  ├─ Insert into _USERS partition
-   │  ├─ Insert ui_login → user_id into _USERS_BY_LOGIN
-   │  └─ Insert s3_access_key → user_id into _USERS_BY_S3_KEY
-   └─ Return redirect to /admin/users
-```
-
-### ADMIN PASSWORD RESET [Multi-User]
-```
-POST /admin/users/{user_id}/password
-└─ admin::handle_update_password()
-   ├─ Verify requester is admin
-   ├─ Parse form (new_password)
-   ├─ UserStore::update_password(user_id, new_password)
-   │  ├─ bcrypt::hash(new_password, DEFAULT_COST)
-   │  ├─ Get user from _USERS
-   │  ├─ Update password_hash
-   │  └─ Save back to _USERS
-   ├─ SessionStore::invalidate_user_sessions(user_id)
-   │  └─ Remove all sessions for this user
-   └─ Return redirect to /admin/users
-```
-
-### ADMIN USER DELETION [Multi-User]
-```
-POST /admin/users/{user_id}/delete
-└─ admin::handle_delete_user()
-   ├─ Verify requester is admin
-   ├─ Check not deleting self
-   ├─ UserStore::delete_user(user_id)
-   │  ├─ Get user to get ui_login and s3_access_key
-   │  ├─ Remove from _USERS partition
-   │  ├─ Remove ui_login from _USERS_BY_LOGIN
-   │  └─ Remove s3_access_key from _USERS_BY_S3_KEY
-   ├─ SessionStore::invalidate_user_sessions(user_id)
-   └─ Return redirect to /admin/users
-```
-
-### MULTI-USER MODE STARTUP
-```
-main() → run_multi_user()
-├─ UsersConfig::load_from_file(users_config_path)
-│  └─ Parse users.toml
-├─ SharedBlockStore::new()
-│  ├─ FjallStore::new() or FjallStoreNotx::new()
-│  └─ MetaStore::new()
-├─ UserStore::new(shared_block_store.meta_store().get_underlying_store())
-│  ├─ Opens _USERS partition
-│  ├─ Opens _USERS_BY_LOGIN partition
-│  └─ Opens _USERS_BY_S3_KEY partition
-├─ SessionStore::new()
-│  └─ Creates empty HashMap
-├─ UserRouter::new(users_config, shared_block_store, ...)
-│  └─ Creates CasFS instance for each user in users.toml
-├─ If user_store.count_users() == 0:
-│  └─ For each user in users.toml:
-│     ├─ generate_random_password(16)
-│     ├─ UserRecord::new(user_id, ui_login=user_id, password, s3_access_key, s3_secret_key, is_admin=first)
-│     ├─ UserStore::create_user(user_record)
-│     └─ Log initial password to console
-├─ S3UserRouter::new(user_router, user_store)
-├─ HttpUiServiceMultiUser::new(user_router, user_store, session_store, metrics)
-└─ S3ServiceBuilder::new(s3_user_router).build()
-```
-
----
-
 ## Data Structures
 
-### ObjectData Enum
 ```rust
-Inline { data: Vec<u8> }           // Small object data
-SinglePart { blocks: Vec<BlockID> } // Regular upload
-MultiPart { blocks: Vec<BlockID>, parts: usize } // Multipart upload
-````
+// Core data types
+type BlockID = [u8; 16];  // MD5 hash
 
-### ObjectType Enum
-
-```rust
-Single = 0,
-Multipart = 1,
-Inline = 2
-```
-
-### RangeRequest Enum
-
-```rust
-All,
-Range(u64, u64),
-ToBytes(u64),
-FromBytes(u64)
-```
-
-### BlockID
-
-```rust
-[u8; 16]  // MD5 hash
-```
-
-### UserRecord (Multi-User Authentication)
-
-```rust
-pub struct UserRecord {
-    pub user_id: String,           // Primary key
-    pub ui_login: String,          // HTTP UI username
-    pub ui_password_hash: String,  // bcrypt DEFAULT_COST (12)
-    pub s3_access_key: String,     // S3 access key (20 chars)
-    pub s3_secret_key: String,     // S3 secret key (40 chars)
-    pub is_admin: bool,            // Admin privileges
-    pub created_at: u64,           // UNIX timestamp
+enum ObjectData {
+    Inline { data: Vec<u8> },                           // Small object data
+    SinglePart { blocks: Vec<BlockID> },                // Regular upload
+    MultiPart { blocks: Vec<BlockID>, parts: usize },   // Multipart upload
 }
-```
 
-Stored in Fjall partitions:
-- `_USERS` - Primary storage (key: user_id)
-- `_USERS_BY_LOGIN` - Index (key: ui_login → value: user_id)
-- `_USERS_BY_S3_KEY` - Index (key: s3_access_key → value: user_id)
-
-### SessionData (Multi-User Authentication)
-
-```rust
-pub struct SessionData {
-    pub user_id: String,
-    pub created_at: Instant,
+enum RangeRequest {
+    All,
+    Range(u64, u64),      // Inclusive range
+    ToBytes(u64),         // From start
+    FromBytes(u64),       // To end
 }
+
+// Multi-user authentication (detailed in module docs above)
+struct UserRecord { user_id, ui_login, ui_password_hash, s3_access_key, s3_secret_key, is_admin, created_at }
+struct SessionData { user_id, created_at }
+struct AuthContext { user_id, is_admin }
 ```
-
-Stored in-memory:
-- `HashMap<String, SessionData>` where key = session_id (64 hex chars)
-- Session lifetime: 24 hours
-- Lost on server restart
-
-### AuthContext (HTTP UI)
-
-```rust
-pub struct AuthContext {
-    pub user_id: String,
-    pub is_admin: bool,
-}
-```
-
-Returned by `SessionAuth::authenticate()` after validating session cookie.
 
 ---
 

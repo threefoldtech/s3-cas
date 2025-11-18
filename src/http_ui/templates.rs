@@ -349,6 +349,55 @@ pub fn login_page(redirect_to: &str, error: Option<&str>) -> String {
     layout("Login - S3-CAS", content).into_string()
 }
 
+/// First-time setup page for creating admin account
+pub fn setup_admin_page(error: Option<&str>) -> String {
+    let content = html! {
+        div class="login-container" {
+            div class="login-box" {
+                h2 { "Welcome to S3-CAS" }
+                p class="setup-message" {
+                    "No users found. Let's create your admin account."
+                }
+
+                @if let Some(err) = error {
+                    div class="alert alert-error" {
+                        (err)
+                    }
+                }
+
+                form method="POST" action="/setup-admin" {
+                    div class="form-group" {
+                        label for="ui_login" { "Admin Username" }
+                        input type="text" id="ui_login" name="ui_login" required autofocus
+                            placeholder="Enter your username";
+                    }
+
+                    div class="form-group" {
+                        label for="password" { "Password" }
+                        input type="password" id="password" name="password" required
+                            placeholder="At least 8 characters";
+                        small { "Minimum 8 characters" }
+                    }
+
+                    div class="form-group" {
+                        label for="confirm_password" { "Confirm Password" }
+                        input type="password" id="confirm_password" name="confirm_password" required
+                            placeholder="Re-enter your password";
+                    }
+
+                    p class="setup-note" {
+                        "S3 credentials will be automatically generated and shown after setup."
+                    }
+
+                    button type="submit" class="btn btn-primary" { "Create Admin Account" }
+                }
+            }
+        }
+    };
+
+    layout("Setup Admin - S3-CAS", content).into_string()
+}
+
 /// Admin users list page
 pub fn admin_users_page(users: &[crate::auth::UserRecord]) -> String {
     let content = html! {
@@ -507,9 +556,22 @@ pub fn reset_password_form(user: &crate::auth::UserRecord) -> String {
 }
 
 /// Profile page showing S3 credentials and password change form
-pub fn profile_page(user: &crate::auth::UserRecord, error_message: Option<&str>) -> String {
+pub fn profile_page(user: &crate::auth::UserRecord, error_message: Option<&str>, is_setup: bool) -> String {
     let content = html! {
         h2 { "My Profile" }
+
+        @if is_setup {
+            div class="alert alert-success" style="margin-bottom: 2rem;" {
+                h3 style="margin-top: 0;" { "Setup Complete!" }
+                p {
+                    "Your admin account has been created successfully. "
+                    strong { "Please save your S3 credentials below - they cannot be retrieved later." }
+                }
+                p style="margin-bottom: 0;" {
+                    "You can now use these credentials to connect S3 clients to this server."
+                }
+            }
+        }
 
         div class="profile-section" {
             h3 { "Account Information" }
@@ -1024,6 +1086,9 @@ code {
     text-decoration: none;
     cursor: pointer;
     font-size: 1rem;
+    vertical-align: middle;
+    line-height: 1.5;
+    box-sizing: border-box;
 }
 
 .btn:hover {
@@ -1133,6 +1198,9 @@ code {
     border: none;
     border-radius: 4px;
     cursor: pointer;
+    vertical-align: middle;
+    line-height: 1.5;
+    box-sizing: border-box;
 }
 
 .btn-small:hover {

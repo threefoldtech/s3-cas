@@ -55,6 +55,7 @@ cookie = "0.18.1"
 hex = "0.4.3"
 rand = "0.8"
 bincode = "2.0.1"
+subtle = "2.6"
 
 
 [profile.release]

@@ -6,8 +6,7 @@ use faster_hex::{hex_decode, hex_string};
 use futures::Stream;
 use futures::StreamExt;
 use md5::{Digest, Md5};
-use tracing::error;
-use tracing::info;
+use tracing;
 use uuid::Uuid;
 
 use rusoto_core::ByteStream;
@@ -77,6 +76,7 @@ fn fmt_content_range(start: u64, end_inclusive: u64, size: u64) -> String {
 
 #[async_trait::async_trait]
 impl S3 for S3FS {
+    #[tracing::instrument(skip(self, req), fields(bucket, key, upload_id))]
     async fn complete_multipart_upload(
         &self,
         req: S3Request<CompleteMultipartUploadInput>,
@@ -89,9 +89,15 @@ impl S3 for S3FS {
             ..
         } = req.input;
 
-        info!(
-            "COMPLETE MULTIPART UPLOAD: bucket={}, key={}, upload_id={}",
-            bucket, key, upload_id
+        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
+        tracing::Span::current().record("key", &tracing::field::display(&key));
+        tracing::Span::current().record("upload_id", &tracing::field::display(&upload_id));
+
+        tracing::debug!(
+            bucket = %bucket,
+            key = %key,
+            upload_id = %upload_id,
+            "Complete multipart upload"
         );
 
         let multipart_upload = if let Some(multipart_upload) = multipart_upload {
@@ -121,24 +127,25 @@ impl S3 for S3FS {
                     .get_multipart_part(&bucket, &key, &upload_id, part_number as i64);
             let mp = match result {
                 Ok(Some(mp)) => {
-                    info!(
-                        "COMPLETE MULTIPART: Retrieved part {} with {} blocks",
-                        part_number,
-                        mp.blocks().len()
+                    tracing::debug!(
+                        part_number = part_number,
+                        blocks = mp.blocks().len(),
+                        "Retrieved multipart upload part"
                     );
                     mp
                 }
                 Ok(None) => {
-                    error!(
-                        "Missing part \"{}\" in multipart upload: part not found",
-                        part_number
+                    tracing::error!(
+                        part_number = part_number,
+                        "Missing part in multipart upload: part not found"
                     );
                     return Err(s3_error!(InvalidArgument, "Part not uploaded"));
                 }
                 Err(e) => {
-                    error!(
-                        "Missing part \"{}\" in multipart upload: {}",
-                        part_number, e
+                    tracing::error!(
+                        part_number = part_number,
+                        error = %e,
+                        "Missing part in multipart upload"
                     );
                     return Err(s3_error!(InvalidArgument, "Part not uploaded"));
                 }
@@ -146,9 +153,10 @@ impl S3 for S3FS {
             blocks.extend_from_slice(mp.blocks());
         }
 
-        info!(
-            "COMPLETE MULTIPART: Collected {} parts, total {} blocks",
-            cnt, blocks.len()
+        tracing::debug!(
+            parts = cnt,
+            blocks = blocks.len(),
+            "Collected multipart upload parts"
         );
 
         let (content_hash, size) = try_!(self.calculate_multipart_hash(&blocks));
@@ -164,9 +172,12 @@ impl S3 for S3FS {
             },
         ));
 
-        info!(
-            "COMPLETE MULTIPART: Created object metadata for bucket={}, key={}, size={}, parts={}",
-            bucket, key, size, cnt
+        tracing::debug!(
+            bucket = %bucket,
+            key = %key,
+            size = size,
+            parts = cnt,
+            "Created multipart upload object metadata"
         );
 
         // Try to delete the multipart metadata. If this fails, it is not really an issue.
@@ -178,15 +189,18 @@ impl S3 for S3FS {
                 &upload_id,
                 part.part_number.unwrap() as i64,
             ) {
-                error!("Could not remove part: {}", e);
+                tracing::error!(error = %e, "Could not remove multipart upload part");
             } else {
                 cleaned_parts += 1;
             }
         }
 
-        info!(
-            "COMPLETE MULTIPART SUCCESS: bucket={}, key={}, upload_id={}, cleaned {} parts",
-            bucket, key, upload_id, cleaned_parts
+        tracing::debug!(
+            bucket = %bucket,
+            key = %key,
+            upload_id = %upload_id,
+            cleaned_parts = cleaned_parts,
+            "Completed multipart upload successfully"
         );
 
         let output = CompleteMultipartUploadOutput {
@@ -213,7 +227,7 @@ impl S3 for S3FS {
     ) -> S3Result<S3Response<CreateBucketOutput>> {
         let input = req.input;
 
-        info!("create bucket");
+        tracing::debug!(bucket = %input.bucket, "Create bucket");
         if try_!(self.casfs.bucket_exists(&input.bucket)) {
             return Err(s3_error!(
                 BucketAlreadyExists,
@@ -243,9 +257,11 @@ impl S3 for S3FS {
 
         let upload_id = Uuid::new_v4().to_string();
 
-        info!(
-            "CREATE MULTIPART UPLOAD: bucket={}, key={}, upload_id={}",
-            bucket, key, upload_id
+        tracing::debug!(
+            bucket = %bucket,
+            key = %key,
+            upload_id = %upload_id,
+            "Create multipart upload"
         );
 
         let output = CreateMultipartUploadOutput {
@@ -271,13 +287,17 @@ impl S3 for S3FS {
         Ok(S3Response::new(DeleteBucketOutput {}))
     }
 
+    #[tracing::instrument(skip(self, req), fields(bucket, key))]
     async fn delete_object(
         &self,
         req: S3Request<DeleteObjectInput>,
     ) -> S3Result<S3Response<DeleteObjectOutput>> {
-        info!("DELETE OBJECT: {:?}", req.input);
-
         let DeleteObjectInput { bucket, key, .. } = req.input;
+
+        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
+        tracing::Span::current().record("key", &tracing::field::display(&key));
+
+        tracing::debug!(bucket = %bucket, key = %key, "Delete object");
 
         if !try_!(self.casfs.key_exists(&bucket, &key)) {
             return Err(s3_error!(NoSuchKey, "Key does not exist"));
@@ -294,9 +314,9 @@ impl S3 for S3FS {
         &self,
         req: S3Request<DeleteObjectsInput>,
     ) -> S3Result<S3Response<DeleteObjectsOutput>> {
-        info!("DELETE OBJECTS: {:?}", req.input);
-
         let DeleteObjectsInput { bucket, delete, .. } = req.input;
+
+        tracing::debug!(bucket = %bucket, object_count = delete.objects.len(), "Delete objects");
 
         if !try_!(self.casfs.bucket_exists(&bucket)) {
             return Err(s3_error!(NoSuchBucket, "Bucket does not exist"));
@@ -314,9 +334,11 @@ impl S3 for S3FS {
                     });
                 }
                 Err(e) => {
-                    error!(
-                        "Could not remove key {} from bucket {}, error: {}",
-                        &object.key, &bucket, e
+                    tracing::error!(
+                        key = %object.key,
+                        bucket = %bucket,
+                        error = %e,
+                        "Could not remove key from bucket"
                     );
                     // TODO
                     // errors.push(code_error!(InternalError, "Could not delete key"));
@@ -351,16 +373,19 @@ impl S3 for S3FS {
         Ok(S3Response::new(output))
     }
 
+    #[tracing::instrument(skip(self, req), fields(bucket, key, size))]
     async fn get_object(
         &self,
         req: S3Request<GetObjectInput>,
     ) -> S3Result<S3Response<GetObjectOutput>> {
-        let input = req.input;
-        info!("GET object {:?}", input);
-
         let GetObjectInput {
             bucket, key, range, ..
-        } = input;
+        } = req.input;
+
+        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
+        tracing::Span::current().record("key", &tracing::field::display(&key));
+
+        tracing::debug!(bucket = %bucket, key = %key, "Get object");
 
         if !try_!(self.casfs.bucket_exists(&bucket)) {
             return Err(s3_error!(NoSuchBucket, "Bucket does not exist"));
@@ -374,7 +399,7 @@ impl S3 for S3FS {
                 return Err(s3_error!(NoSuchKey, "Object does not exist"));
             }
             Err(e) => {
-                error!("Could not get object metadata: {}", e);
+                tracing::error!(bucket = %bucket, key = %key, error = %e, "Could not get object metadata");
                 return Err(s3_error!(ServiceUnavailable, "service unavailable"));
             }
         };
@@ -457,7 +482,7 @@ impl S3 for S3FS {
                 return Err(s3_error!(NoSuchKey, "Object does not exist"));
             }
             Err(e) => {
-                error!("Could not get object metadata: {}", e);
+                tracing::error!(bucket = %bucket, key = %key, error = %e, "Could not get object metadata");
                 return Err(s3_error!(ServiceUnavailable, "service unavailable"));
             }
         };
@@ -559,7 +584,6 @@ impl S3 for S3FS {
         &self,
         req: S3Request<ListObjectsV2Input>,
     ) -> S3Result<S3Response<ListObjectsV2Output>> {
-        info!("LIST OBJECTS V2: {:?}", req.input);
         let ListObjectsV2Input {
             bucket,
             delimiter,
@@ -570,6 +594,8 @@ impl S3 for S3FS {
             continuation_token,
             ..
         } = req.input;
+
+        tracing::debug!(bucket = %bucket, "List objects v2");
 
         let b = try_!(self.casfs.get_bucket(&bucket));
 
@@ -626,12 +652,17 @@ impl S3 for S3FS {
         Ok(S3Response::new(output))
     }
 
+    #[tracing::instrument(skip(self, req), fields(bucket, key, size))]
     async fn put_object(
         &self,
         req: S3Request<PutObjectInput>,
     ) -> S3Result<S3Response<PutObjectOutput>> {
         let input = req.input;
-        info!("PUT object {:?}", input);
+
+        tracing::Span::current().record("bucket", &tracing::field::display(&input.bucket));
+        tracing::Span::current().record("key", &tracing::field::display(&input.key));
+
+        tracing::debug!(bucket = %input.bucket, key = %input.key, "Put object");
         if let Some(ref storage_class) = input.storage_class {
             let is_valid = ["STANDARD", "REDUCED_REDUNDANCY"].contains(&storage_class.as_str());
             if !is_valid {
@@ -695,6 +726,7 @@ impl S3 for S3FS {
         Ok(S3Response::new(output))
     }
 
+    #[tracing::instrument(skip(self, req), fields(bucket, key, upload_id, part_number, size))]
     async fn upload_part(
         &self,
         req: S3Request<UploadPartInput>,
@@ -710,9 +742,17 @@ impl S3 for S3FS {
             ..
         } = req.input;
 
-        info!(
-            "UPLOAD PART: bucket={}, key={}, upload_id={}, part_number={}",
-            bucket, key, upload_id, part_number
+        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
+        tracing::Span::current().record("key", &tracing::field::display(&key));
+        tracing::Span::current().record("upload_id", &tracing::field::display(&upload_id));
+        tracing::Span::current().record("part_number", part_number);
+
+        tracing::debug!(
+            bucket = %bucket,
+            key = %key,
+            upload_id = %upload_id,
+            part_number = part_number,
+            "Upload part"
         );
 
         let Some(body) = body else {
@@ -752,9 +792,14 @@ impl S3 for S3FS {
             blocks.clone()
         ));
 
-        info!(
-            "UPLOAD PART SUCCESS: bucket={}, key={}, upload_id={}, part_number={}, size={}, blocks={}",
-            bucket, key, upload_id, part_number, size, blocks.len()
+        tracing::debug!(
+            bucket = %bucket,
+            key = %key,
+            upload_id = %upload_id,
+            part_number = part_number,
+            size = size,
+            blocks = blocks.len(),
+            "Upload part completed"
         );
 
         let e_tag = format!("\"{}\"", hex_string(&hash));
