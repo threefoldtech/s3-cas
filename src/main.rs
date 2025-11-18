@@ -6,8 +6,8 @@ use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use http_body_util::Full;
 use prometheus::Encoder;
-use tracing::{debug, info, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::info;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use s3_cas::cas::{CasFS, StorageEngine};
 use s3_cas::check::{check_integrity, CheckConfig};
@@ -88,9 +88,10 @@ pub struct ServerConfig {
 
     #[arg(
         long,
-        help = "Path to users.toml config file (enables multi-user mode)"
+        default_value = "info",
+        help = "Log level (error, warn, info, debug, trace). Can also be set via RUST_LOG env var"
     )]
-    users_config: Option<PathBuf>,
+    log_level: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -128,20 +129,35 @@ pub enum InspectCommand {
     DiskSpace,
 }
 
-fn setup_tracing() {
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .finish();
+fn setup_tracing(log_level: &str) {
+    // Try to use RUST_LOG env var first, fall back to CLI flag
+    let filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(log_level))
+        .unwrap_or_else(|_| {
+            eprintln!("Invalid log level '{}', falling back to 'info'", log_level);
+            EnvFilter::new("info")
+        });
 
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 }
 
 fn main() -> Result<()> {
     // console_subscriber::init();
     dotenv::dotenv().ok();
 
-    setup_tracing();
     let cli = Cli::parse();
+
+    // Extract log level from Server command, or use default for other commands
+    let log_level = match &cli.command {
+        Command::Server(config) => config.log_level.as_str(),
+        _ => "info",
+    };
+
+    setup_tracing(log_level);
+
     match cli.command {
         Command::Inspect {
             command,
@@ -175,36 +191,19 @@ async fn run(args: ServerConfig) -> anyhow::Result<()> {
     let storage_engine = args.metadata_db;
     let metrics = s3_cas::metrics::SharedMetrics::new();
 
-    // Validate argument combinations
-    let users_config_path = args.users_config.clone();
-    if users_config_path.is_none() {
-        // Single-user mode requires access_key and secret_key
-        if args.access_key.is_none() || args.secret_key.is_none() {
-            anyhow::bail!(
-                "Single-user mode requires both --access-key and --secret-key.\n\
-                 For multi-user mode, use --users-config instead."
-            );
-        }
-    }
-
-    // Check if multi-user mode is enabled
-    if let Some(users_config_path) = users_config_path {
-        info!("Multi-user mode enabled, loading users from {:?}", users_config_path);
-        run_multi_user(args, storage_engine, metrics, users_config_path).await
-    } else {
-        info!("Single-user mode");
+    // Check if single-user mode is explicitly requested
+    if args.access_key.is_some() && args.secret_key.is_some() {
+        info!("Single-user mode (explicit credentials provided)");
         run_single_user(args, storage_engine, metrics).await
+    } else if args.access_key.is_some() || args.secret_key.is_some() {
+        anyhow::bail!(
+            "Single-user mode requires both --access-key and --secret-key.\n\
+             Omit both for multi-user mode with database-backed authentication."
+        );
+    } else {
+        info!("Multi-user mode (database-backed authentication)");
+        run_multi_user(args, storage_engine, metrics).await
     }
-}
-
-/// Generates a random password for initial user creation
-fn generate_random_password(length: usize) -> String {
-    use rand::Rng;
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
-    (0..length)
-        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
-        .collect()
 }
 
 async fn run_single_user(
@@ -278,24 +277,20 @@ async fn run_multi_user(
     args: ServerConfig,
     storage_engine: s3_cas::cas::StorageEngine,
     metrics: s3_cas::metrics::SharedMetrics,
-    users_config_path: PathBuf,
 ) -> anyhow::Result<()> {
-    use s3_cas::auth::{UsersConfig, UserRouter};
+    use s3_cas::auth::UserRouter;
     use s3_cas::cas::SharedBlockStore;
+    use s3_cas::s3_wrapper::DynamicS3Auth;
 
-    // Load users configuration
-    let users_config = UsersConfig::load_from_file(&users_config_path)
-        .map_err(|e| anyhow::anyhow!("Failed to load users config: {}", e))?;
+    info!("Starting multi-user mode with dynamic authentication");
 
-    info!("Loaded {} users from config", users_config.users.len());
-
-    // Create shared block store
-    let shared_block_store = SharedBlockStore::new(
+    // Create shared block store (singleton for all users)
+    let shared_block_store = Arc::new(SharedBlockStore::new(
         args.meta_root.join("blocks"),
         storage_engine,
         args.inline_metadata_size,
         Some(args.durability),
-    )?;
+    )?);
 
     // Create UserStore using the same storage backend as SharedBlockStore
     let user_store = Arc::new(s3_cas::auth::UserStore::new(
@@ -305,10 +300,9 @@ async fn run_multi_user(
     // Create SessionStore for HTTP UI authentication
     let session_store = Arc::new(s3_cas::auth::SessionStore::new());
 
-    // Create user router with pre-created CasFS instances
+    // Create user router with lazy CasFS initialization
     let user_router = Arc::new(UserRouter::new(
-        users_config.clone(),
-        &shared_block_store,
+        shared_block_store.clone(),
         args.fs_root.clone(),
         args.meta_root.clone(),
         metrics.clone(),
@@ -317,44 +311,15 @@ async fn run_multi_user(
         Some(args.durability),
     ));
 
-    // Migrate users from users.toml to database (one-time migration)
-    // Check if first user from config exists in database
-    let needs_migration = if let Some((first_user_id, _)) = users_config.users.iter().next() {
-        user_store.get_user_by_id(first_user_id)?.is_none()
+    let user_count = user_store.count_users()?;
+    if user_count == 0 {
+        info!("No users found in database. First user will be created through HTTP UI setup.");
     } else {
-        false
-    };
-
-    if needs_migration && !users_config.users.is_empty() {
-        info!("Migrating {} users from users.toml to database...", users_config.users.len());
-
-        let mut is_first = true;
-        for (user_id, user) in &users_config.users {
-            // Generate random initial password
-            let initial_password = generate_random_password(16);
-
-            let user_record = s3_cas::auth::UserRecord::new(
-                user_id.clone(),
-                user_id.clone(), // ui_login = user_id by default
-                &initial_password,
-                user.access_key.clone(),
-                user.secret_key.clone(),
-                is_first, // first user is admin
-            )?;
-
-            user_store.create_user(user_record)?;
-
-            info!("✓ User '{}' created | Initial password: {}", user_id, initial_password);
-            info!("  Please log in and change your password immediately.");
-
-            is_first = false;
-        }
-
-        info!("Migration complete! {} users created.", users_config.users.len());
+        info!("Found {} user(s) in database", user_count);
     }
 
     // Create S3UserRouter for per-request routing
-    info!("Setting up S3UserRouter for per-user S3 API access");
+    info!("Setting up S3UserRouter with dynamic authentication");
     let s3_user_router = s3_cas::s3_wrapper::S3UserRouter::new(
         user_router.clone(),
         user_store.clone(),
@@ -376,21 +341,38 @@ async fn run_multi_user(
         None
     };
 
-    // Setup S3 service with multi-user authentication
+    // Setup S3 service with dynamic authentication
     let service = {
-        let mut auth = s3s::auth::SimpleAuth::new();
-
-        // Register all users from config
-        for (user_id, user) in &users_config.users {
-            auth.register(user.access_key.clone(), user.secret_key.clone().into());
-            debug!("Registered S3 credentials for user: {}", user_id);
-        }
-
-        let mut b = S3ServiceBuilder::new(s3_service);
+        let auth = DynamicS3Auth::new(user_store.clone());
+        let mut b = s3s::service::S3ServiceBuilder::new(s3_service);
         b.set_auth(auth);
-        info!("Multi-user S3 service enabled with {} users", users_config.users.len());
+        info!("Multi-user S3 service enabled with dynamic authentication");
         b.build()
     };
+
+    // Spawn background task for session cleanup and metrics
+    {
+        let session_store_clone = session_store.clone();
+        let metrics_clone = metrics.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+
+                // Clean up expired sessions
+                let removed = session_store_clone.cleanup_expired();
+                if removed > 0 {
+                    tracing::debug!(removed = removed, "Cleaned up expired sessions");
+                }
+
+                // Update active session count metric
+                let active_count = session_store_clone.active_session_count();
+                metrics_clone.set_active_sessions(active_count);
+                tracing::trace!(active_sessions = active_count, "Updated session metrics");
+            }
+        });
+        info!("Started background session cleanup and metrics task");
+    }
 
     run_server(args, service, http_ui_service, metrics).await
 }

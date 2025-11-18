@@ -3,9 +3,10 @@ use http_body_util::{BodyExt, Full};
 use hyper::{body::Incoming, header, Request, Response, StatusCode};
 use rand::Rng;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing;
 
 use crate::auth::{SessionStore, UserRecord, UserStore};
+use crate::metrics::SharedMetrics;
 
 use super::{responses, templates};
 
@@ -52,7 +53,7 @@ pub async fn handle_list_users(user_store: Arc<UserStore>) -> Response<Full<Byte
             responses::html_response(StatusCode::OK, templates::admin_users_page(&users))
         }
         Err(e) => {
-            warn!("Failed to list users: {}", e);
+            tracing::warn!(error = %e, "Failed to list users");
             responses::html_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 templates::error_page("Failed to list users"),
@@ -70,12 +71,13 @@ pub async fn handle_new_user_form() -> Response<Full<Bytes>> {
 pub async fn handle_create_user(
     req: Request<Incoming>,
     user_store: Arc<UserStore>,
+    metrics: SharedMetrics,
 ) -> Response<Full<Bytes>> {
     // Parse form data
     let body_bytes = match req.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            warn!("Failed to read request body: {}", e);
+            tracing::warn!(error = %e, "Failed to read request body");
             return redirect_with_error("/admin/users", "Invalid request");
         }
     };
@@ -147,7 +149,7 @@ pub async fn handle_create_user(
     ) {
         Ok(u) => u,
         Err(e) => {
-            warn!("Failed to create user record: {}", e);
+            tracing::warn!(error = %e, "Failed to create user record");
             return redirect_with_error("/admin/users/new", "Failed to create user");
         }
     };
@@ -155,7 +157,12 @@ pub async fn handle_create_user(
     // Store user in database
     match user_store.create_user(user) {
         Ok(_) => {
-            debug!("User created: {}", user_id);
+            metrics.record_admin_operation("user_create");
+            tracing::info!(
+                user_id = %user_id,
+                is_admin = is_admin,
+                "User created via admin panel"
+            );
             // Redirect to users list with success message showing the credentials
             let message = format!(
                 "User created: {} | Password: {} | S3 Key: {} | S3 Secret: {}",
@@ -164,7 +171,7 @@ pub async fn handle_create_user(
             redirect_with_success("/admin/users", &message)
         }
         Err(e) => {
-            warn!("Failed to store user: {}", e);
+            tracing::warn!(error = %e, user_id = %user_id, "Failed to store user");
             redirect_with_error("/admin/users/new", &format!("Failed to create user: {}", e))
         }
     }
@@ -175,6 +182,7 @@ pub async fn handle_delete_user(
     user_id: &str,
     user_store: Arc<UserStore>,
     session_store: Arc<SessionStore>,
+    metrics: SharedMetrics,
 ) -> Response<Full<Bytes>> {
     // Delete all sessions for this user
     session_store.delete_user_sessions(user_id);
@@ -182,11 +190,12 @@ pub async fn handle_delete_user(
     // Delete user from database
     match user_store.delete_user(user_id) {
         Ok(_) => {
-            debug!("User deleted: {}", user_id);
+            metrics.record_admin_operation("user_delete");
+            tracing::info!(user_id = %user_id, "User deleted via admin panel");
             redirect_with_success("/admin/users", &format!("User '{}' deleted", user_id))
         }
         Err(e) => {
-            warn!("Failed to delete user {}: {}", user_id, e);
+            tracing::warn!(error = %e, user_id = %user_id, "Failed to delete user");
             redirect_with_error("/admin/users", &format!("Failed to delete user: {}", e))
         }
     }
@@ -206,7 +215,7 @@ pub async fn handle_reset_password_form(
             templates::error_page(&format!("User '{}' not found", user_id)),
         ),
         Err(e) => {
-            warn!("Failed to get user {}: {}", user_id, e);
+            tracing::warn!(error = %e, user_id = %user_id, "Failed to get user");
             responses::html_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 templates::error_page("Failed to load user"),
@@ -221,12 +230,13 @@ pub async fn handle_update_password(
     req: Request<Incoming>,
     user_store: Arc<UserStore>,
     session_store: Arc<SessionStore>,
+    metrics: SharedMetrics,
 ) -> Response<Full<Bytes>> {
     // Parse form data
     let body_bytes = match req.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            warn!("Failed to read request body: {}", e);
+            tracing::warn!(error = %e, "Failed to read request body");
             return redirect_with_error("/admin/users", "Invalid request");
         }
     };
@@ -255,13 +265,14 @@ pub async fn handle_update_password(
     // Update password
     match user_store.update_password(user_id, &new_password) {
         Ok(_) => {
-            debug!("Password updated for user: {}", user_id);
+            metrics.record_admin_operation("password_reset");
+            tracing::info!(user_id = %user_id, "Password updated via admin panel");
             // Invalidate all sessions for this user
             session_store.delete_user_sessions(user_id);
             redirect_with_success("/admin/users", &format!("Password updated for user '{}'", user_id))
         }
         Err(e) => {
-            warn!("Failed to update password for user {}: {}", user_id, e);
+            tracing::warn!(error = %e, user_id = %user_id, "Failed to update password");
             redirect_with_error("/admin/users", &format!("Failed to update password: {}", e))
         }
     }
@@ -283,6 +294,7 @@ pub async fn handle_toggle_admin(
     user_id: &str,
     current_user_id: &str,
     user_store: Arc<UserStore>,
+    metrics: SharedMetrics,
 ) -> Response<Full<Bytes>> {
     // Prevent users from removing their own admin rights
     if user_id == current_user_id {
@@ -296,7 +308,7 @@ pub async fn handle_toggle_admin(
             return redirect_with_error("/admin/users", &format!("User '{}' not found", user_id));
         }
         Err(e) => {
-            warn!("Failed to get user {}: {}", user_id, e);
+            tracing::warn!(error = %e, user_id = %user_id, "Failed to get user");
             return redirect_with_error("/admin/users", "Failed to get user");
         }
     };
@@ -304,17 +316,24 @@ pub async fn handle_toggle_admin(
     // Toggle admin status
     let new_status = !user.is_admin;
     let action = if new_status { "granted" } else { "revoked" };
+    let metric_operation = if new_status { "admin_grant" } else { "admin_revoke" };
 
     match user_store.update_admin_status(user_id, new_status) {
         Ok(_) => {
-            debug!("Admin rights {} for user: {}", action, user_id);
+            metrics.record_admin_operation(metric_operation);
+            tracing::info!(
+                user_id = %user_id,
+                is_admin = new_status,
+                action = action,
+                "Admin rights {} via admin panel", action
+            );
             redirect_with_success(
                 "/admin/users",
                 &format!("Admin rights {} for user '{}'", action, user_id),
             )
         }
         Err(e) => {
-            warn!("Failed to update admin status for {}: {}", user_id, e);
+            tracing::warn!(error = %e, user_id = %user_id, "Failed to update admin status");
             redirect_with_error("/admin/users", &format!("Failed to update admin status: {}", e))
         }
     }

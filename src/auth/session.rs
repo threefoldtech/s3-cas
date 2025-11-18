@@ -2,7 +2,6 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tracing::{debug, warn};
 
 /// Default session lifetime: 24 hours
 pub const DEFAULT_SESSION_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -71,7 +70,7 @@ impl SessionStore {
         let session_id = Self::generate_session_id();
         let session_data = SessionData::new(user_id.clone(), self.session_lifetime);
 
-        debug!("Creating session {} for user: {}", session_id, user_id);
+        tracing::debug!(session_id = %session_id, user_id = %user_id, "Creating session");
 
         let mut sessions = self.sessions.write().unwrap();
         sessions.insert(session_id.clone(), session_data);
@@ -86,7 +85,7 @@ impl SessionStore {
         match sessions.get(session_id) {
             Some(session_data) => {
                 if session_data.is_expired() {
-                    debug!("Session {} is expired", session_id);
+                    tracing::debug!(session_id = %session_id, "Session is expired");
                     None
                 } else {
                     Some(session_data.user_id.clone())
@@ -103,7 +102,7 @@ impl SessionStore {
 
     /// Deletes a session (logout)
     pub fn delete_session(&self, session_id: &str) -> bool {
-        debug!("Deleting session: {}", session_id);
+        tracing::debug!(session_id = %session_id, "Deleting session");
         let mut sessions = self.sessions.write().unwrap();
         sessions.remove(session_id).is_some()
     }
@@ -115,7 +114,7 @@ impl SessionStore {
 
         sessions.retain(|session_id, session_data| {
             if session_data.is_expired() {
-                debug!("Removing expired session: {}", session_id);
+                tracing::debug!(session_id = %session_id, "Removing expired session");
                 false
             } else {
                 true
@@ -124,7 +123,7 @@ impl SessionStore {
 
         let removed = initial_count - sessions.len();
         if removed > 0 {
-            debug!("Cleaned up {} expired sessions", removed);
+            tracing::debug!(removed = removed, "Cleaned up expired sessions");
         }
         removed
     }
@@ -151,10 +150,10 @@ impl SessionStore {
         if let Some(session_data) = sessions.get_mut(session_id) {
             if !session_data.is_expired() {
                 session_data.expires_at = Instant::now() + self.session_lifetime;
-                debug!("Refreshed session: {}", session_id);
+                tracing::debug!(session_id = %session_id, "Refreshed session");
                 return true;
             } else {
-                warn!("Attempted to refresh expired session: {}", session_id);
+                tracing::warn!(session_id = %session_id, "Attempted to refresh expired session");
             }
         }
 
@@ -163,7 +162,7 @@ impl SessionStore {
 
     /// Deletes all sessions for a specific user
     pub fn delete_user_sessions(&self, user_id: &str) -> usize {
-        debug!("Deleting all sessions for user: {}", user_id);
+        tracing::debug!(user_id = %user_id, "Deleting all sessions for user");
         let mut sessions = self.sessions.write().unwrap();
         let initial_count = sessions.len();
 
@@ -171,7 +170,7 @@ impl SessionStore {
 
         let removed = initial_count - sessions.len();
         if removed > 0 {
-            debug!("Removed {} sessions for user: {}", removed, user_id);
+            tracing::debug!(removed = removed, user_id = %user_id, "Removed sessions for user");
         }
         removed
     }

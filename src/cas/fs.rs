@@ -23,8 +23,6 @@ use futures::{
 use md5::{Digest, Md5};
 use rusoto_core::ByteStream;
 
-use tracing::error;
-
 pub const BLOCK_SIZE: usize = 1 << 20; // Supposedly 1 MiB
 
 struct PendingMarker {
@@ -308,6 +306,7 @@ impl CasFS {
 
     /// Remove a bucket and its associated metadata.
     // TODO: this is very much not optimal
+    #[tracing::instrument(skip(self), fields(bucket = %bucket_name, objects_deleted))]
     pub async fn bucket_delete(&self, bucket_name: &str) -> Result<(), MetaError> {
         // remove from the bucket list tree/partition
         let bmt = self.user_meta_store.get_allbuckets_tree()?;
@@ -315,6 +314,7 @@ impl CasFS {
 
         // removes all objects in the bucket
         let bucket = self.user_meta_store.get_bucket_ext(bucket_name)?;
+        let mut object_count = 0;
         for key_val in bucket.iter_all() {
             let (key, _) = key_val?;
             self.delete_object(
@@ -322,7 +322,10 @@ impl CasFS {
                 std::str::from_utf8(&key).expect("keys are valid utf-8"),
             )
             .await?;
+            object_count += 1;
         }
+
+        tracing::Span::current().record("objects_deleted", object_count);
 
         // remove the bucket tree/partition itself
         self.user_meta_store.drop_bucket(bucket_name)?;
@@ -348,7 +351,7 @@ impl CasFS {
 
         let storage_key = self.part_key(&bucket, &key, &upload_id, part_number);
 
-        tracing::info!(
+        tracing::debug!(
             "CasFS: insert_multipart_part storage_key={}, size={}, blocks={}",
             storage_key,
             size,
@@ -371,7 +374,7 @@ impl CasFS {
         let mp_map = self.multipart_tree.clone();
         let part_key = self.part_key(bucket, key, upload_id, part_number);
 
-        tracing::info!(
+        tracing::debug!(
             "CasFS: get_multipart_part storage_key={}",
             part_key
         );
@@ -379,7 +382,7 @@ impl CasFS {
         let result = mp_map.get_multipart_part(part_key.as_bytes());
 
         if let Ok(Some(ref mp)) = result {
-            tracing::info!(
+            tracing::debug!(
                 "CasFS: get_multipart_part found storage_key={}, blocks={}",
                 part_key,
                 mp.blocks().len()
@@ -399,7 +402,7 @@ impl CasFS {
         let mp_map = self.multipart_tree.clone();
         let part_key = self.part_key(bucket, key, upload_id, part_number);
 
-        tracing::info!(
+        tracing::debug!(
             "CasFS: remove_multipart_part storage_key={}",
             part_key
         );
@@ -419,11 +422,14 @@ impl CasFS {
 
     /// Delete an object from a bucket.
     /// it also delete keys under it's tree
+    #[tracing::instrument(skip(self), fields(bucket = %bucket, key = %key, blocks_deleted))]
     pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), MetaError> {
         let path_map = self.path_tree()?;
 
         // get blocks that safe to delete
         let blocks_to_delete = self.user_meta_store.delete_object(bucket, key)?;
+
+        tracing::Span::current().record("blocks_deleted", blocks_to_delete.len());
 
         // Now
         // - delete all the blocks from disk
@@ -436,10 +442,10 @@ impl CasFS {
             if let Err(e) = path_map.remove(block.path()) {
                 // Only print error, we might be able to remove the other ones. If we exist
                 // here, those will be left dangling.
-                error!(
-                    "Could not unlink path {} from path map: {}",
-                    hex_string(block.path()),
-                    e
+                tracing::error!(
+                    path = %hex_string(block.path()),
+                    error = %e,
+                    "Could not unlink path from path map"
                 );
             };
         }
@@ -482,6 +488,7 @@ impl CasFS {
     ///
     /// A list of block ID's used as keys for the data blocks is
     /// returned, along with the hash of the full byte stream, and the length of the stream.
+    #[tracing::instrument(skip(self, data), fields(bucket = %bucket_name, key = %key, size, blocks))]
     pub async fn store_object(
         &self,
         bucket_name: &str,
@@ -521,7 +528,7 @@ impl CasFS {
                         .send(Err(std::io::Error::new(e.kind(), e.to_string())))
                         .await
                     {
-                        error!("Could not convey result: {}", e);
+                        tracing::error!(error = %e, "Could not convey result");
                     }
                     return;
                 }
@@ -561,7 +568,7 @@ impl CasFS {
                 let block = match write_meta_result {
                     Err(e) => {
                         if let Err(e) = tx.unbounded_send(Err(e.into())) {
-                            error!("Could not send transaction error: {}", e);
+                            tracing::error!(error = %e, "Could not send transaction error");
                         }
                         return;
                     }
@@ -572,7 +579,7 @@ impl CasFS {
                         Box::new(store_tx).commit().unwrap();
 
                         if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
-                            error!("Could not send block id: {}", e);
+                            tracing::error!(error = %e, "Could not send block id");
                         }
                         return;
                     }
@@ -594,7 +601,7 @@ impl CasFS {
 
                     if let Err(e) = tx.unbounded_send(Err(e)) {
                         pm.block_write_error();
-                        error!("Could not send path create error: {}", e);
+                        tracing::error!(error = %e, "Could not send path create error");
                         return;
                     }
                 }
@@ -605,7 +612,7 @@ impl CasFS {
 
                     if let Err(e) = tx.unbounded_send(Err(e)) {
                         pm.block_write_error();
-                        error!("Could not send block write error: {}", e);
+                        tracing::error!(error = %e, "Could not send block write error");
                         return;
                     }
                 }
@@ -616,7 +623,7 @@ impl CasFS {
                         // TODO FIXME if the transaction fails, we need to delete the block from the storage
                         if let Err(e) = tx.unbounded_send(Err(err.into())) {
                             pm.block_write_error();
-                            error!("Could not send transaction error: {}", e);
+                            tracing::error!(error = %e, "Could not send transaction error");
                         }
                         return;
                     }
@@ -625,7 +632,7 @@ impl CasFS {
                 pm.block_written(bytes.len());
 
                 if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
-                    error!("Could not send block id: {}", e);
+                    tracing::error!(error = %e, "Could not send block id");
                 }
             },
         )
@@ -635,8 +642,13 @@ impl CasFS {
         // Make sure the chunks are in the proper order
         ids.sort_by_key(|a| a.0);
 
+        let blocks: Vec<BlockID> = ids.into_iter().map(|(_, id)| id).collect();
+
+        tracing::Span::current().record("size", size);
+        tracing::Span::current().record("blocks", blocks.len());
+
         Ok((
-            ids.into_iter().map(|(_, id)| id).collect(),
+            blocks,
             content_hash.finalize().into(),
             size,
         ))

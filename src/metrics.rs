@@ -65,6 +65,10 @@ pub struct Metrics {
     data_blocks_pending_write: IntGauge,
     data_blocks_write_errors: IntCounter,
     data_blocks_dropped: IntCounter,
+    // Authentication metrics
+    auth_login_attempts: IntCounterVec,
+    auth_active_sessions: IntGauge,
+    auth_admin_operations: IntCounterVec,
 }
 
 // TODO: this can be improved, make sure this does not crash on multiple instances;
@@ -132,6 +136,34 @@ impl Metrics {
             "Amount of data blocks dropped due to client disconnects before the block was (fully) written to storage",
         ).expect("can register an int gauge in the default registry");
 
+        let auth_login_attempts = register_int_counter_vec!(
+            "auth_login_attempts_total",
+            "Total number of login attempts (HTTP UI)",
+            &["result"],
+        ).expect("can register auth_login_attempts counter vec");
+
+        // Initialize labels for login attempts
+        auth_login_attempts.with_label_values(&["success"]);
+        auth_login_attempts.with_label_values(&["failure"]);
+
+        let auth_active_sessions = register_int_gauge!(
+            "auth_active_sessions",
+            "Current number of active HTTP UI sessions"
+        ).expect("can register auth_active_sessions gauge");
+
+        let auth_admin_operations = register_int_counter_vec!(
+            "auth_admin_operations_total",
+            "Total number of admin operations performed",
+            &["operation"],
+        ).expect("can register auth_admin_operations counter vec");
+
+        // Initialize labels for admin operations
+        auth_admin_operations.with_label_values(&["user_create"]);
+        auth_admin_operations.with_label_values(&["user_delete"]);
+        auth_admin_operations.with_label_values(&["password_reset"]);
+        auth_admin_operations.with_label_values(&["admin_grant"]);
+        auth_admin_operations.with_label_values(&["admin_revoke"]);
+
         Self {
             method_calls,
             bucket_count,
@@ -143,6 +175,9 @@ impl Metrics {
             data_blocks_pending_write,
             data_blocks_write_errors,
             data_blocks_dropped,
+            auth_login_attempts,
+            auth_active_sessions,
+            auth_admin_operations,
         }
     }
 
@@ -196,6 +231,20 @@ impl Metrics {
     pub fn blocks_dropped(&self, amount: u64) {
         self.data_blocks_pending_write.sub(amount as i64);
         self.data_blocks_dropped.inc_by(amount)
+    }
+
+    // Authentication metrics methods
+    pub fn record_login_attempt(&self, success: bool) {
+        let result = if success { "success" } else { "failure" };
+        self.auth_login_attempts.with_label_values(&[result]).inc();
+    }
+
+    pub fn set_active_sessions(&self, count: usize) {
+        self.auth_active_sessions.set(count as i64);
+    }
+
+    pub fn record_admin_operation(&self, operation: &str) {
+        self.auth_admin_operations.with_label_values(&[operation]).inc();
     }
 }
 

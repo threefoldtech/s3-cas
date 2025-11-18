@@ -14,20 +14,27 @@ pub async fn handle_profile_page(
     user_store: Arc<UserStore>,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    // Extract error message from query string if present
-    let error_message = req
-        .uri()
-        .query()
-        .and_then(|q| {
-            q.split('&')
-                .find(|p| p.starts_with("error="))
-                .and_then(|p| p.strip_prefix("error="))
-                .map(|e| urlencoding::decode(e).unwrap_or_default().to_string())
-        });
+    // Extract query parameters
+    let query = req.uri().query();
+
+    let error_message = query.and_then(|q| {
+        q.split('&')
+            .find(|p| p.starts_with("error="))
+            .and_then(|p| p.strip_prefix("error="))
+            .map(|e| urlencoding::decode(e).unwrap_or_default().to_string())
+    });
+
+    // Check if this is coming from first-time setup
+    let is_setup = query
+        .and_then(|q| q.split('&').find(|p| *p == "setup=1"))
+        .is_some();
 
     match user_store.get_user_by_id(&user_id) {
         Ok(Some(user)) => {
-            responses::html_response(StatusCode::OK, templates::profile_page(&user, error_message.as_deref()))
+            responses::html_response(
+                StatusCode::OK,
+                templates::profile_page(&user, error_message.as_deref(), is_setup),
+            )
         }
         Ok(None) => {
             warn!("User not found: {}", user_id);

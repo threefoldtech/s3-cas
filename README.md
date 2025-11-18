@@ -21,7 +21,13 @@ The `vendored` feature can be used if a static binary is needed.
 ```bash
 git clone https://github.com/leesmet/s3-cas
 cd s3-cas
-cargo build --release --features binary
+cargo build --release
+```
+
+OR
+
+```bash
+cargo build --release --target x86_64-unknown-linux-musl --features vendored
 ```
 
 ## Running
@@ -63,66 +69,43 @@ Access the UI at `http://localhost:8080` (login with username/password above).
 
 For production deployments requiring isolated storage per user with separate credentials.
 
-#### 1. Create `users.toml` configuration
-
-```toml
-# users.toml
-[users.alice]
-access_key = "AKIAIOSFODNN7EXAMPLE"
-secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-
-[users.bob]
-access_key = "AKIAI44QH8DHBEXAMPLE"
-secret_key = "je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY"
-
-[users.charlie]
-access_key = "AKIDEXAMPLE"
-secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYZEXAMPLE"
-```
-
-**Important:** Each user's data is completely isolated. Users cannot access each other's buckets or objects.
-
-#### 2. Start server in multi-user mode
+**Multi-user mode is the default** - just run the server without specifying `--access-key` or `--secret-key`:
 
 ```bash
 s3-cas server \
   --fs-root=/tmp/s3/fs \
   --meta-root=/tmp/s3/meta \
-  --users-config=users.toml \
   --enable-http-ui \
   --http-ui-host=localhost \
   --http-ui-port=8080
 ```
 
-**Note:** In multi-user mode, `--access-key` and `--secret-key` flags are not used. Authentication is handled per-user via the S3 API credentials in `users.toml`.
+For listening on an IP address, or listening on all interfaces , use IP or 0.0.0.0 for --http-ui-host
 
-#### 3. Initial Setup - Admin Account
+**Important:** Each user's data is completely isolated. Users cannot access each other's buckets or objects.
 
-On first startup, S3-CAS will automatically migrate users from `users.toml` to the database and generate **random initial passwords** for the HTTP UI:
+#### First-Time Setup - Create Admin Account
 
-```
-INFO Multi-user mode enabled, loading users from "users.toml"
-INFO Migrating 3 users from users.toml to database...
-INFO ✓ User 'alice' created | Initial password: xK9mP2nQ7wR5tL3v
-INFO   Please log in and change your password immediately.
-INFO ✓ User 'bob' created | Initial password: aB8dF3jK9mN2qT7w
-INFO   Please log in and change your password immediately.
-INFO ✓ User 'charlie' created | Initial password: pL5xR2vN8mK4wQ9t
-INFO   Please log in and change your password immediately.
-INFO Migration complete! 3 users created.
-```
+When you first access the HTTP UI with no users in the database:
 
-**The first user** (alice in this example) **is automatically granted admin privileges.**
+1. Navigate to `http://localhost:8080` (redirects to `/login`)
+2. You'll see a **setup form** instead of a login form
+3. Create your admin account:
+   - **Username:** Choose a username for HTTP UI login
+   - **Password:** Choose a secure password (minimum 8 characters)
+   - **Confirm Password:** Re-enter your password
+4. Click **"Create Admin Account"**
 
-#### 4. Access the HTTP UI
+S3-CAS will automatically:
 
-1. Navigate to `http://localhost:8080`
-2. Log in with the first user's credentials:
-   - **Username:** `alice` (same as user_id in users.toml)
-   - **Password:** The random password from the console output
-3. **Immediately change your password** via the admin panel
+- Create your admin account with is_admin privileges
+- **Auto-generate S3 credentials** (access_key and secret_key)
+- Log you in immediately
+- Display your S3 credentials **once** with a warning to save them
 
-#### 5. Admin Panel Features
+**Important:** S3 credentials are shown only once after setup! Save them in a secure location. You can view them later in your profile page.
+
+#### Admin Panel Features
 
 After logging in as an admin, you'll see an **"⚙️ Admin"** link in the navigation bar. Click it to access the admin panel where you can:
 
@@ -133,6 +116,7 @@ After logging in as an admin, you'll see an **"⚙️ Admin"** link in the navig
 - **Grant/revoke admin privileges**
 
 **Navigation Features:**
+
 - **Admin users** see: `Buckets | Health | ⚙️ Admin | Logout`
 - **Regular users** see: `Buckets | Health | Logout`
 - **Single-user mode** sees: `Buckets | Health` (basic auth, no logout needed)
@@ -159,9 +143,12 @@ When `--enable-http-ui` is enabled, you can browse your S3 storage via a web bro
 - `GET /health` - Health check endpoint
 
 **Multi-user mode only:**
-- `GET /login` - Login page
+
+- `GET /login` - Login page (or setup form if no users exist)
+- `POST /setup-admin` - Create first admin account
 - `POST /logout` - Logout
 - `GET /admin/users` - User management (admin only)
+- `GET /profile` - View user profile and S3 credentials
 
 ## Storage Backends
 
@@ -197,6 +184,7 @@ improving performance for small objects.
 ```
 
 When inline metadata is enabled:
+
 - Small objects are stored directly in metadata (no separate block files)
 - Reduces disk I/O for small file reads
 - Setting to 0 or omitting disables inlining completely

@@ -278,6 +278,13 @@ impl MetaStore {
         let obj = Object::try_from(&*raw_object).expect("Malformed object");
         let mut to_delete: Vec<Block> = Vec::with_capacity(obj.blocks().len());
 
+        tracing::debug!(
+            bucket = bucket,
+            key = key,
+            block_count = obj.blocks().len(),
+            "Deleting object"
+        );
+
         // Delete the object from the bucket
         bucket_tree.remove(key.as_bytes())?;
 
@@ -289,17 +296,41 @@ impl MetaStore {
 
                     // If this is the last reference to the block, delete it
                     if block.rc() == 1 {
+                        tracing::debug!(
+                            block_hash = %hex::encode(block_id),
+                            rc = block.rc(),
+                            "Block rc==1: deleting block and marking for file deletion"
+                        );
                         block_tree.remove(block_id)?;
                         to_delete.push(block);
                     } else {
                         // Otherwise decrement the reference count
+                        let old_rc = block.rc();
                         block.decrement_refcount();
+                        let new_rc = block.rc();
+                        tracing::debug!(
+                            block_hash = %hex::encode(block_id),
+                            old_rc = old_rc,
+                            new_rc = new_rc,
+                            "Block rc>1: decrementing refcount"
+                        );
                         block_tree.insert(block_id, block.to_vec())?;
                     }
                 }
-                None => continue, // Block not found, skip it
+                None => {
+                    tracing::warn!(
+                        block_hash = %hex::encode(block_id),
+                        "Block not found in tree during deletion"
+                    );
+                    continue; // Block not found, skip it
+                }
             }
         }
+
+        tracing::debug!(
+            blocks_to_delete = to_delete.len(),
+            "Finished processing object deletion"
+        );
 
         Ok(to_delete)
     }
@@ -490,9 +521,25 @@ impl Transaction {
 
                 // If the key doesn't have this block, increment the reference count
                 if !key_has_block {
+                    let old_rc = block.rc();
                     block.increment_refcount();
+                    let new_rc = block.rc();
+                    tracing::debug!(
+                        block_hash = %hex::encode(&block_hash),
+                        old_rc = old_rc,
+                        new_rc = new_rc,
+                        key_has_block = key_has_block,
+                        "Block exists: incrementing refcount"
+                    );
                     self.backend
                         .insert(DEFAULT_BLOCK_TREE, &block_hash, block.to_vec())?;
+                } else {
+                    tracing::debug!(
+                        block_hash = %hex::encode(&block_hash),
+                        rc = block.rc(),
+                        key_has_block = key_has_block,
+                        "Block exists: NOT incrementing (key already has it)"
+                    );
                 }
 
                 Ok((false, block))
@@ -517,6 +564,14 @@ impl Transaction {
 
                 // insert this new block
                 let block = Block::new(data_len, block_hash[..idx].to_vec());
+
+                tracing::debug!(
+                    block_hash = %hex::encode(&block_hash),
+                    rc = block.rc(),
+                    data_len = data_len,
+                    key_has_block = key_has_block,
+                    "Creating new block with rc=1"
+                );
 
                 self.backend
                     .insert(DEFAULT_BLOCK_TREE, &block_hash, block.to_vec())?;
