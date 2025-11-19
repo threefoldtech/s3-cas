@@ -48,6 +48,8 @@ pub struct ObjectListResponse {
     pub directories: Vec<DirectoryInfo>,
     pub objects: Vec<ObjectInfo>,
     pub total_count: usize,
+    pub has_more: bool,
+    pub next_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -115,26 +117,46 @@ pub async fn list_objects(
         Ok(true) => {}
     }
 
-    // Parse prefix from query parameters
-    let prefix = req
-        .uri()
-        .query()
-        .and_then(|q| {
-            q.split('&')
-                .find(|p| p.starts_with("prefix="))
-                .and_then(|p| p.strip_prefix("prefix="))
-                .map(|p| urlencoding::decode(p).unwrap_or_default().to_string())
-        })
+    // Parse query parameters
+    let query_params = req.uri().query().unwrap_or("");
+
+    let prefix = query_params
+        .split('&')
+        .find(|p| p.starts_with("prefix="))
+        .and_then(|p| p.strip_prefix("prefix="))
+        .map(|p| urlencoding::decode(p).unwrap_or_default().to_string())
         .unwrap_or_default();
+
+    let limit: usize = query_params
+        .split('&')
+        .find(|p| p.starts_with("limit="))
+        .and_then(|p| p.strip_prefix("limit="))
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(100); // Default limit of 100 items
+
+    let start_after = query_params
+        .split('&')
+        .find(|p| p.starts_with("token="))
+        .and_then(|p| p.strip_prefix("token="))
+        .map(|p| urlencoding::decode(p).unwrap_or_default().to_string());
 
     // Get bucket tree and list objects
     match casfs.get_bucket(bucket) {
         Ok(tree) => {
             let mut directories = HashSet::new();
             let mut objects = Vec::new();
+            let mut last_key: Option<String> = None;
+            let mut item_count = 0;
+            let mut has_more = false;
 
             // Use range_filter to get objects with the given prefix
-            for (key, obj) in tree.range_filter(None, Some(prefix.clone()), None) {
+            for (key, obj) in tree.range_filter(start_after.clone(), Some(prefix.clone()), None) {
+                // Check if we've hit the limit
+                if item_count >= limit {
+                    has_more = true;
+                    break;
+                }
+
                 // Check if this key has subdirectories after the prefix
                 let relative_key = if prefix.is_empty() {
                     key.as_str()
@@ -146,10 +168,16 @@ pub async fn list_objects(
                     // This is a subdirectory
                     let dir_name = &relative_key[..slash_pos + 1];
                     let full_prefix = format!("{}{}", prefix, dir_name);
-                    directories.insert(DirectoryInfo {
+                    let dir_info = DirectoryInfo {
                         name: dir_name.to_string(),
                         prefix: full_prefix,
-                    });
+                    };
+
+                    // Only count unique directories toward the limit
+                    if directories.insert(dir_info) {
+                        item_count += 1;
+                        last_key = Some(key.clone());
+                    }
                 } else {
                     // This is a file at the current level
                     objects.push(ObjectInfo {
@@ -160,6 +188,8 @@ pub async fn list_objects(
                         is_inlined: obj.is_inlined(),
                         block_count: obj.blocks().len(),
                     });
+                    item_count += 1;
+                    last_key = Some(key.clone());
                 }
             }
 
@@ -170,12 +200,16 @@ pub async fn list_objects(
 
             let total_count = directories.len() + objects.len();
 
+            let next_token = if has_more { last_key } else { None };
+
             let response = ObjectListResponse {
                 bucket: bucket.to_string(),
                 prefix,
                 directories,
                 objects,
                 total_count,
+                has_more,
+                next_token,
             };
 
             if wants_html {

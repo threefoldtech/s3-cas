@@ -11,7 +11,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 use s3_cas::cas::{CasFS, StorageEngine};
 use s3_cas::check::{check_integrity, CheckConfig};
-use s3_cas::inspect::{disk_space, num_keys};
 use s3_cas::metastore::Durability;
 use s3_cas::retrieve::{retrieve, RetrieveConfig};
 
@@ -108,6 +107,9 @@ pub enum Command {
         )]
         metadata_db: StorageEngine,
 
+        #[arg(long, help = "Path to users config file for multi-user mode")]
+        users_config: Option<PathBuf>,
+
         #[command(subcommand)]
         command: InspectCommand,
     },
@@ -124,9 +126,43 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum InspectCommand {
-    // number of keys
+    /// Number of keys (objects) in database
     NumKeys,
+    /// Total disk space used by database
     DiskSpace,
+    /// List all users (multi-user mode only)
+    ListUsers,
+    /// Show per-user storage statistics
+    UserStats {
+        /// Specific user ID to show stats for (optional)
+        user_id: Option<String>,
+    },
+    /// List all buckets
+    ListBuckets {
+        /// Filter by user ID (multi-user mode)
+        #[arg(long)]
+        user: Option<String>,
+    },
+    /// Show statistics for a specific bucket
+    BucketStats {
+        /// Bucket name
+        bucket: String,
+        /// User ID (required in multi-user mode)
+        #[arg(long)]
+        user: Option<String>,
+    },
+    /// Show block storage statistics and deduplication ratio
+    BlockStats,
+    /// Show detailed information about a specific object
+    ObjectInfo {
+        /// Bucket name
+        bucket: String,
+        /// Object key
+        key: String,
+        /// User ID (required in multi-user mode)
+        #[arg(long)]
+        user: Option<String>,
+    },
 }
 
 fn setup_tracing(log_level: &str) {
@@ -163,16 +199,38 @@ fn main() -> Result<()> {
             command,
             meta_root,
             metadata_db,
-        } => match command {
-            InspectCommand::NumKeys => {
-                let num_keys = num_keys(meta_root, metadata_db)?;
-                println!("Number of keys: {num_keys}");
+            users_config,
+        } => {
+            use s3_cas::inspect::*;
+            match command {
+                InspectCommand::NumKeys => {
+                    let num_keys = num_keys(meta_root, metadata_db, users_config)?;
+                    println!("Number of keys: {num_keys}");
+                }
+                InspectCommand::DiskSpace => {
+                    let disk_space = disk_space(meta_root, metadata_db, users_config);
+                    println!("Disk space: {disk_space}");
+                }
+                InspectCommand::ListUsers => {
+                    list_users(meta_root, metadata_db, users_config)?;
+                }
+                InspectCommand::UserStats { user_id } => {
+                    user_stats(meta_root, metadata_db, users_config, user_id)?;
+                }
+                InspectCommand::ListBuckets { user } => {
+                    list_buckets(meta_root, metadata_db, users_config, user)?;
+                }
+                InspectCommand::BucketStats { bucket, user } => {
+                    bucket_stats(meta_root, metadata_db, users_config, bucket, user)?;
+                }
+                InspectCommand::BlockStats => {
+                    block_stats(meta_root, metadata_db, users_config)?;
+                }
+                InspectCommand::ObjectInfo { bucket, key, user } => {
+                    object_info(meta_root, metadata_db, users_config, bucket, key, user)?;
+                }
             }
-            InspectCommand::DiskSpace => {
-                let disk_space = disk_space(meta_root, metadata_db);
-                println!("Disk space: {disk_space}");
-            }
-        },
+        }
         Command::Retrieve(config) => retrieve(config)?,
         Command::Check(config) => check_integrity(config)?,
         Command::Server(config) => {
@@ -187,7 +245,26 @@ use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use s3s::service::S3ServiceBuilder;
 
 #[tokio::main]
-async fn run(args: ServerConfig) -> anyhow::Result<()> {
+async fn run(mut args: ServerConfig) -> anyhow::Result<()> {
+    // Canonicalize paths to avoid repeated getcwd() syscalls in async operations
+    // This is critical for performance when using relative paths
+    args.fs_root = args.fs_root.canonicalize()
+        .unwrap_or_else(|_| {
+            std::fs::create_dir_all(&args.fs_root).ok();
+            args.fs_root.canonicalize()
+                .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&args.fs_root))
+        });
+
+    args.meta_root = args.meta_root.canonicalize()
+        .unwrap_or_else(|_| {
+            std::fs::create_dir_all(&args.meta_root).ok();
+            args.meta_root.canonicalize()
+                .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&args.meta_root))
+        });
+
+    info!("Using fs_root: {}", args.fs_root.display());
+    info!("Using meta_root: {}", args.meta_root.display());
+
     let storage_engine = args.metadata_db;
     let metrics = s3_cas::metrics::SharedMetrics::new();
 

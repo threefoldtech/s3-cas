@@ -101,7 +101,7 @@ impl MetaStore {
     /// # Returns
     /// A BlockTree instance or an error
     pub fn get_block_tree(&self) -> Result<BlockTree, MetaError> {
-        let tree = self.store.tree_open(DEFAULT_BLOCK_TREE)?;
+        let tree = self.store.tree_ext_open(DEFAULT_BLOCK_TREE)?;
         Ok(BlockTree { tree })
     }
 
@@ -376,11 +376,11 @@ impl Debug for MetaStore {
 
 /// `BlockTree` provides specialized operations for working with block metadata.
 ///
-/// This struct wraps a BaseMetaTree and provides methods specific to block operations,
+/// This struct wraps a MetaTreeExt and provides methods specific to block operations,
 /// such as retrieving and manipulating block metadata.
 #[derive(Clone)]
 pub struct BlockTree {
-    tree: Arc<dyn BaseMetaTree>,
+    tree: Arc<dyn MetaTreeExt + Send + Sync>,
 }
 
 impl Debug for BlockTree {
@@ -452,6 +452,35 @@ impl BlockTree {
     /// The raw block data if found, None if the key doesn't exist, or an error
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, MetaError> {
         self.tree.get(key)
+    }
+
+    /// Returns an iterator over all blocks in the tree.
+    ///
+    /// # Returns
+    /// An iterator yielding (BlockID, Block) tuples
+    pub fn iter_all(&self) -> Box<dyn Iterator<Item = Result<(BlockID, Block), MetaError>> + '_> {
+        use crate::metastore::block::BLOCKID_SIZE;
+
+        Box::new(self.tree.iter_all().filter_map(|result| {
+            match result {
+                Ok((key, value)) => {
+                    // Parse the block ID from the key
+                    let block_id: BlockID = if key.len() >= BLOCKID_SIZE {
+                        let mut id = [0u8; BLOCKID_SIZE];
+                        id.copy_from_slice(&key[..BLOCKID_SIZE]);
+                        id
+                    } else {
+                        return Some(Err(MetaError::OtherDBError("Malformed block key".to_string())));
+                    };
+                    // Deserialize the block
+                    match Block::try_from(&*value) {
+                        Ok(block) => Some(Ok((block_id, block))),
+                        Err(e) => Some(Err(MetaError::OtherDBError(e.to_string()))),
+                    }
+                }
+                Err(e) => Some(Err(e)),
+            }
+        }))
     }
 }
 

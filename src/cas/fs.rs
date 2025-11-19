@@ -132,6 +132,15 @@ impl CasFS {
     ) -> Self {
         meta_path.push("db");
         root.push("blocks");
+
+        // Canonicalize both paths to eliminate getcwd() syscalls in async operations
+        // This is critical for performance as it avoids repeated getcwd() on every file op
+        std::fs::create_dir_all(&root).ok();
+        root = root.canonicalize().unwrap_or(root);
+
+        std::fs::create_dir_all(&meta_path).ok();
+        meta_path = meta_path.canonicalize().unwrap_or(meta_path);
+
         let meta_store = match storage_engine {
             StorageEngine::Fjall => {
                 let store = FjallStore::new(meta_path, inlined_metadata_size, durability);
@@ -189,6 +198,14 @@ impl CasFS {
     ) -> Self {
         user_meta_path.push("db");
         root.push("blocks");
+
+        // Canonicalize both paths to eliminate getcwd() syscalls in async operations
+        // This is critical for performance as it avoids repeated getcwd() on every file op
+        std::fs::create_dir_all(&root).ok();
+        root = root.canonicalize().unwrap_or(root);
+
+        std::fs::create_dir_all(&user_meta_path).ok();
+        user_meta_path = user_meta_path.canonicalize().unwrap_or(user_meta_path);
 
         let user_meta_store = match storage_engine {
             StorageEngine::Fjall => {

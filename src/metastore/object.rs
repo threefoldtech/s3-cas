@@ -263,6 +263,22 @@ impl Object {
             _ => None,
         }
     }
+
+    /// Returns the object type.
+    ///
+    /// # Returns
+    /// The ObjectType of this object
+    pub fn object_type(&self) -> ObjectType {
+        self.object_type
+    }
+
+    /// Returns a reference to the object data.
+    ///
+    /// # Returns
+    /// A reference to the ObjectData enum
+    pub fn data(&self) -> &ObjectData {
+        &self.data
+    }
 }
 
 /// Implements serialization of an Object to a byte vector.

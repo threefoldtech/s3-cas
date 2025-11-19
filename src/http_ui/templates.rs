@@ -213,6 +213,23 @@ pub fn objects_page(response: &ObjectListResponse) -> String {
                     }
                 }
             }
+
+            // Pagination controls
+            @if response.has_more {
+                @if let Some(ref token) = response.next_token {
+                    div class="pagination" {
+                        @if response.prefix.is_empty() {
+                            a href={ "/buckets/" (response.bucket) "?token=" (urlencoding::encode(token)) } class="btn btn-primary" {
+                                "Load More (Next 100)"
+                            }
+                        } @else {
+                            a href={ "/buckets/" (response.bucket) "?prefix=" (urlencoding::encode(&response.prefix)) "&token=" (urlencoding::encode(token)) } class="btn btn-primary" {
+                                "Load More (Next 100)"
+                            }
+                        }
+                    }
+                }
+            }
         }
     };
 
@@ -1270,6 +1287,18 @@ code {
     color: #666;
 }
 
+/* Pagination */
+.pagination {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid #ddd;
+    text-align: center;
+}
+
+.pagination .btn {
+    min-width: 150px;
+}
+
 @media (prefers-color-scheme: dark) {
     body {
         background: #1a1a1a;
@@ -1364,6 +1393,10 @@ code {
     .help-text {
         border-top-color: #444;
         color: #a0a0a0;
+    }
+
+    .pagination {
+        border-top-color: #444;
     }
 }
 "#;

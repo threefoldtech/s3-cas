@@ -34,6 +34,11 @@ impl SharedBlockStore {
     ) -> Result<Self, MetaError> {
         path.push("db");
 
+        // Canonicalize path to eliminate getcwd() syscalls in async operations
+        // This is critical for performance as it avoids repeated getcwd() on every file op
+        std::fs::create_dir_all(&path).ok();
+        path = path.canonicalize().unwrap_or(path);
+
         let meta_store = match storage_engine {
             StorageEngine::Fjall => {
                 let store = FjallStore::new(path, inlined_metadata_size, durability);
