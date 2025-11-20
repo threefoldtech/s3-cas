@@ -52,8 +52,8 @@ impl PendingMarker {
         self.metrics.block_ignored();
     }
 
-    pub fn block_written(&mut self, size: usize) {
-        self.metrics.block_written(size);
+    pub fn block_written(&mut self, _size: usize) {
+        self.metrics.block_written();
         self.in_flight -= 1;
     }
 }
@@ -702,7 +702,7 @@ mod tests {
 
     const TEST_ENGINES: [StorageEngine; 2] = [StorageEngine::Fjall, StorageEngine::FjallNotx];
 
-    static METRICS: Lazy<SharedMetrics> = Lazy::new(|| SharedMetrics::new());
+    static METRICS: Lazy<SharedMetrics> = Lazy::new(|| SharedMetrics::default());
 
     fn setup_test_fs(storage_engine: StorageEngine) -> (CasFS, tempfile::TempDir) {
         let dir = tempdir().unwrap();

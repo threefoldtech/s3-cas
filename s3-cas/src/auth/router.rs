@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::debug;
 
-use crate::cas::{CasFS, SharedBlockStore, StorageEngine};
-use crate::metastore::Durability;
+use cas_storage::{CasFS, SharedBlockStore, StorageEngine};
+use cas_storage::Durability;
 use crate::metrics::SharedMetrics;
 
 /// Error types for user routing
@@ -84,7 +84,7 @@ impl UserRouter {
             self.shared_block_store.path_tree(),
             self.shared_block_store.multipart_tree(),
             self.shared_block_store.meta_store(),
-            self.metrics.clone(),
+            self.metrics.to_cas_metrics(),
             self.storage_engine,
             self.inlined_metadata_size,
             self.durability,

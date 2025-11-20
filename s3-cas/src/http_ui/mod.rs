@@ -19,7 +19,7 @@ use bytes::Bytes;
 use http_body_util::Full;
 use hyper::{Method, Request, Response, StatusCode};
 
-use crate::cas::CasFS;
+use cas_storage::CasFS;
 use crate::metrics::SharedMetrics;
 
 /// HTTP UI service for browsing CAS storage

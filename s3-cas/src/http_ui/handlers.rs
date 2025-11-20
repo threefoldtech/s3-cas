@@ -5,8 +5,8 @@ use http_body_util::Full;
 use hyper::{Request, Response, StatusCode};
 use serde::Serialize;
 
-use crate::cas::CasFS;
-use crate::metastore::BucketMeta;
+use cas_storage::CasFS;
+use cas_storage::BucketMeta;
 
 use super::{responses, templates};
 

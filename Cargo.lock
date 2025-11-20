@@ -730,6 +730,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6236364b88b9b6d0bc181ba374cf1ab55ba3ef97a1cb6f8cddad48a273767fb5"
 
 [[package]]
+name = "cas-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-fs",
+ "async-trait",
+ "bincode",
+ "bytes",
+ "chrono",
+ "faster-hex",
+ "fjall",
+ "futures",
+ "hex",
+ "md-5 0.10.6",
+ "once_cell",
+ "rusoto_core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3158,7 +3183,6 @@ name = "s3-cas"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-fs",
  "async-trait",
  "aws-config",
  "aws-credential-types",
@@ -3167,6 +3191,7 @@ dependencies = [
  "bcrypt",
  "bincode",
  "bytes",
+ "cas-storage",
  "chrono",
  "clap",
  "console-subscriber",
@@ -3175,7 +3200,6 @@ dependencies = [
  "dotenv",
  "env_logger",
  "faster-hex",
- "fjall",
  "futures",
  "hex",
  "http-body-util",

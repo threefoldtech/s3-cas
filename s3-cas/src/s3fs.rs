@@ -27,8 +27,7 @@ use s3s::S3Result;
 use s3s::S3;
 use s3s::{S3Request, S3Response};
 
-use crate::cas::{block_stream::BlockStream, range_request::parse_range_request, CasFS};
-use crate::metastore::{BlockID, ObjectData};
+use cas_storage::{BlockStream, parse_range_request, RangeRequest, CasFS, BlockID, ObjectData};
 use crate::metrics::SharedMetrics;
 
 const MAX_KEYS: i32 = 1000;
@@ -37,8 +36,6 @@ pub struct S3FS {
     casfs: Arc<CasFS>,
     metrics: SharedMetrics,
 }
-
-use crate::cas::range_request::RangeRequest;
 impl S3FS {
     pub fn new(casfs: Arc<CasFS>, metrics: SharedMetrics) -> Self {
         // Get the current amount of buckets
@@ -435,7 +432,7 @@ impl S3 for S3FS {
         let block_size: usize = paths.iter().map(|(_, size)| size).sum();
 
         debug_assert!(obj_meta.size() as usize == block_size);
-        let block_stream = BlockStream::new(paths, block_size, range, self.metrics.clone());
+        let block_stream = BlockStream::new(paths, block_size, range, self.metrics.to_cas_metrics());
         let stream = StreamingBlob::wrap(block_stream);
 
         let output = GetObjectOutput {

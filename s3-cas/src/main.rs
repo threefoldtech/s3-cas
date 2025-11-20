@@ -9,9 +9,9 @@ use prometheus::Encoder;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use s3_cas::cas::{CasFS, StorageEngine};
+use cas_storage::{CasFS, StorageEngine};
 use s3_cas::check::{check_integrity, CheckConfig};
-use s3_cas::metastore::Durability;
+use cas_storage::Durability;
 use s3_cas::retrieve::{retrieve, RetrieveConfig};
 
 #[derive(Parser)]
@@ -285,14 +285,14 @@ async fn run(mut args: ServerConfig) -> anyhow::Result<()> {
 
 async fn run_single_user(
     args: ServerConfig,
-    storage_engine: s3_cas::cas::StorageEngine,
+    storage_engine: cas_storage::StorageEngine,
     metrics: s3_cas::metrics::SharedMetrics,
 ) -> anyhow::Result<()> {
     // Original single-user implementation
     let casfs = CasFS::new(
         args.fs_root.clone(),
         args.meta_root.clone(),
-        metrics.clone(),
+        metrics.to_cas_metrics(),
         storage_engine,
         args.inline_metadata_size,
         Some(args.durability),
@@ -305,7 +305,7 @@ async fn run_single_user(
         let http_casfs = CasFS::new(
             args.fs_root.clone(),
             args.meta_root.clone(),
-            metrics.clone(),
+            metrics.to_cas_metrics(),
             storage_engine,
             args.inline_metadata_size,
             Some(args.durability),
@@ -352,11 +352,11 @@ async fn run_single_user(
 
 async fn run_multi_user(
     args: ServerConfig,
-    storage_engine: s3_cas::cas::StorageEngine,
+    storage_engine: cas_storage::StorageEngine,
     metrics: s3_cas::metrics::SharedMetrics,
 ) -> anyhow::Result<()> {
     use s3_cas::auth::UserRouter;
-    use s3_cas::cas::SharedBlockStore;
+    use cas_storage::SharedBlockStore;
     use s3_cas::s3_wrapper::DynamicS3Auth;
 
     info!("Starting multi-user mode with dynamic authentication");

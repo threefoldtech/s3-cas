@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use cas_storage::MetricsCollector;
 use prometheus::{
     register_int_counter, register_int_counter_vec, register_int_gauge, IntCounter, IntCounterVec,
     IntGauge,
@@ -38,11 +39,50 @@ impl SharedMetrics {
             metrics: Arc::new(Metrics::new()),
         }
     }
+
+    /// Convert to cas_storage::SharedMetrics
+    pub fn to_cas_metrics(&self) -> cas_storage::SharedMetrics {
+        cas_storage::SharedMetrics::new(self.metrics.clone())
+    }
 }
 
 impl Default for SharedMetrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl MetricsCollector for Metrics {
+    fn block_pending(&self) {
+        self.data_blocks_pending_write.inc();
+    }
+
+    fn block_written(&self) {
+        self.data_blocks_pending_write.dec();
+        self.data_blocks_written.inc();
+    }
+
+    fn block_write_error(&self) {
+        self.data_blocks_pending_write.dec();
+        self.data_blocks_write_errors.inc();
+    }
+
+    fn block_ignored(&self) {
+        self.data_blocks_pending_write.dec();
+        self.data_blocks_ignored.inc();
+    }
+
+    fn blocks_dropped(&self, amount: u64) {
+        self.data_blocks_pending_write.sub(amount as i64);
+        self.data_blocks_dropped.inc_by(amount);
+    }
+
+    fn bytes_sent(&self, amount: usize) {
+        self.data_bytes_sent.inc_by(amount as u64);
+    }
+
+    fn bytes_received(&self, amount: usize) {
+        self.data_bytes_received.inc_by(amount as u64);
     }
 }
 

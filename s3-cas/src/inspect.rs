@@ -3,8 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
-use crate::cas::StorageEngine;
-use crate::metastore::{FjallStore, FjallStoreNotx, MetaStore, ObjectType, ObjectData};
+use cas_storage::StorageEngine;
+use cas_storage::{FjallStore, FjallStoreNotx, MetaStore, ObjectType, ObjectData};
 use crate::auth::UserStore;
 
 /// Detects if multi-user mode is enabled and returns list of user IDs

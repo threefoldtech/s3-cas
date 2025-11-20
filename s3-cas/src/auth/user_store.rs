@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, warn};
 
-use crate::metastore::{MetaError, Store};
+use cas_storage::{MetaError, Store};
 
 
 const USERS_TREE: &str = "_USERS";
