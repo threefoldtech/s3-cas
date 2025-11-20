@@ -504,6 +504,7 @@ impl S3 for S3FS {
             let bucket = Bucket {
                 creation_date: Some(Timestamp::from(bucket.ctime())),
                 name: Some(bucket.name().into()),
+                bucket_region: None,
             };
             buckets.push(bucket);
         }
