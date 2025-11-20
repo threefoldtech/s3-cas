@@ -214,21 +214,134 @@ pub fn objects_page(response: &ObjectListResponse) -> String {
                 }
             }
 
-            // Pagination controls
+            // Infinite scroll loading indicator
             @if response.has_more {
-                @if let Some(ref token) = response.next_token {
-                    div class="pagination" {
-                        @if response.prefix.is_empty() {
-                            a href={ "/buckets/" (response.bucket) "?token=" (urlencoding::encode(token)) } class="btn btn-primary" {
-                                "Load More (Next 100)"
-                            }
-                        } @else {
-                            a href={ "/buckets/" (response.bucket) "?prefix=" (urlencoding::encode(&response.prefix)) "&token=" (urlencoding::encode(token)) } class="btn btn-primary" {
-                                "Load More (Next 100)"
-                            }
-                        }
-                    }
+                div id="loading-indicator" class="loading-indicator" style="display: none;" {
+                    "Loading more items..."
                 }
+                div id="scroll-sentinel" style="height: 1px;";
+            }
+
+            script {
+                (PreEscaped(format!(r#"
+                    (function() {{
+                        let isLoading = false;
+                        let hasMore = {};
+                        let nextToken = {};
+                        const bucket = {};
+                        const prefix = {};
+
+                        const loadingIndicator = document.getElementById('loading-indicator');
+                        const sentinel = document.getElementById('scroll-sentinel');
+                        const tbody = document.querySelector('table tbody');
+
+                        function formatSize(bytes) {{
+                            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                            let size = bytes;
+                            let unitIdx = 0;
+                            while (size >= 1024 && unitIdx < units.length - 1) {{
+                                size /= 1024;
+                                unitIdx++;
+                            }}
+                            if (unitIdx === 0) {{
+                                return bytes + ' ' + units[0];
+                            }}
+                            return size.toFixed(2) + ' ' + units[unitIdx];
+                        }}
+
+                        async function loadMore() {{
+                            if (isLoading || !hasMore) return;
+
+                            isLoading = true;
+                            loadingIndicator.style.display = 'block';
+
+                            try {{
+                                let url = '/api/v1/buckets/' + encodeURIComponent(bucket);
+                                const params = new URLSearchParams();
+                                if (prefix) params.append('prefix', prefix);
+                                if (nextToken) params.append('token', nextToken);
+                                if (params.toString()) url += '?' + params.toString();
+
+                                const response = await fetch(url);
+                                if (!response.ok) throw new Error('Failed to load more items');
+
+                                const data = await response.json();
+
+                                // Append directories
+                                data.directories.forEach(dir => {{
+                                    const row = document.createElement('tr');
+                                    row.className = 'directory-row';
+                                    row.innerHTML = `
+                                        <td>
+                                            <a href="/buckets/${{encodeURIComponent(bucket)}}?prefix=${{encodeURIComponent(dir.prefix)}}">
+                                                📁 ${{escapeHtml(dir.name)}}
+                                            </a>
+                                        </td>
+                                        <td class="number">—</td>
+                                        <td><span class="badge directory">folder</span></td>
+                                        <td>—</td>
+                                    `;
+                                    tbody.appendChild(row);
+                                }});
+
+                                // Append objects
+                                data.objects.forEach(obj => {{
+                                    const row = document.createElement('tr');
+                                    const fileName = obj.key.split('/').pop() || obj.key;
+                                    const typeClass = obj.is_inlined ? 'inline' : 'blocks';
+                                    const typeLabel = obj.is_inlined ? 'inline' : 'blocks';
+                                    row.innerHTML = `
+                                        <td>
+                                            <a href="/buckets/${{encodeURIComponent(bucket)}}/${{encodeURIComponent(obj.key)}}">
+                                                📄 ${{escapeHtml(fileName)}}
+                                            </a>
+                                        </td>
+                                        <td class="number">${{formatSize(obj.size)}}</td>
+                                        <td><span class="badge ${{typeClass}}">${{typeLabel}}</span></td>
+                                        <td>${{escapeHtml(obj.last_modified)}}</td>
+                                    `;
+                                    tbody.appendChild(row);
+                                }});
+
+                                hasMore = data.has_more;
+                                nextToken = data.next_token;
+
+                                if (!hasMore) {{
+                                    sentinel.remove();
+                                }}
+                            }} catch (error) {{
+                                console.error('Error loading more items:', error);
+                            }} finally {{
+                                isLoading = false;
+                                loadingIndicator.style.display = 'none';
+                            }}
+                        }}
+
+                        function escapeHtml(text) {{
+                            const div = document.createElement('div');
+                            div.textContent = text;
+                            return div.innerHTML;
+                        }}
+
+                        // Intersection Observer for infinite scroll
+                        if (sentinel && hasMore) {{
+                            const observer = new IntersectionObserver(
+                                (entries) => {{
+                                    if (entries[0].isIntersecting) {{
+                                        loadMore();
+                                    }}
+                                }},
+                                {{ rootMargin: '100px' }}
+                            );
+                            observer.observe(sentinel);
+                        }}
+                    }})();
+                "#,
+                    response.has_more,
+                    response.next_token.as_ref().map(|t| format!("\"{}\"", t.replace("\"", "\\\""))).unwrap_or_else(|| "null".to_string()),
+                    serde_json::to_string(&response.bucket).unwrap(),
+                    serde_json::to_string(&response.prefix).unwrap()
+                )))
             }
         }
     };
@@ -1287,16 +1400,29 @@ code {
     color: #666;
 }
 
-/* Pagination */
-.pagination {
+/* Loading indicator for infinite scroll */
+.loading-indicator {
     margin-top: 2rem;
-    padding-top: 1rem;
-    border-top: 1px solid #ddd;
+    padding: 1rem;
     text-align: center;
+    color: #666;
+    font-style: italic;
 }
 
-.pagination .btn {
-    min-width: 150px;
+.loading-indicator::after {
+    content: '';
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-left: 8px;
+    border: 2px solid #ddd;
+    border-top-color: #3498db;
+    border-radius: 50%;
+    animation: spinner 0.8s linear infinite;
+}
+
+@keyframes spinner {
+    to { transform: rotate(360deg); }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1395,8 +1521,13 @@ code {
         color: #a0a0a0;
     }
 
-    .pagination {
-        border-top-color: #444;
+    .loading-indicator {
+        color: #a0a0a0;
+    }
+
+    .loading-indicator::after {
+        border-color: #444;
+        border-top-color: #3498db;
     }
 }
 "#;
