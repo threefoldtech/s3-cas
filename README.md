@@ -1,10 +1,7 @@
 # S3-CAS
 
 > **Note:** This is a continuation of Lee Smet's original [s3-cas](https://github.com/leesmet/s3-cas) project.
-> We're grateful for his foundational work on content-addressable S3 storage.
-
-A simple POC implementation of the (basic) S3 API using content-addressable storage. The current implementation
-has been running in production for 1.5 years storing some 250M objects.
+> It is the foundational work on content-addressable S3 storage.
 
 ## Features
 
