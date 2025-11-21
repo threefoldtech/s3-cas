@@ -1,5 +1,8 @@
 # S3-CAS
 
+> **Note:** This is a continuation of Lee Smet's original [s3-cas](https://github.com/leesmet/s3-cas) project.
+> We're grateful for his foundational work on content-addressable S3 storage.
+
 A simple POC implementation of the (basic) S3 API using content-addressable storage. The current implementation
 has been running in production for 1.5 years storing some 250M objects.
 
@@ -19,7 +22,7 @@ To build it yourself, clone the repo and then use the standard rust tools.
 The `vendored` feature can be used if a static binary is needed.
 
 ```bash
-git clone https://github.com/leesmet/s3-cas
+git clone https://github.com/threefoldtech/s3-cas
 cd s3-cas
 cargo build --release
 ```

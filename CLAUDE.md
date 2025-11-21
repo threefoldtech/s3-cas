@@ -582,6 +582,23 @@ struct AuthContext { user_id, is_admin }
 
 ---
 
+## Recent Major Changes
+
+- **ADR 003**: Extracted CAS storage layer as reusable library (`cas-storage` crate)
+- **Multi-user authentication**: Session-based auth with admin panel and per-user isolation
+- **HTTP UI enhancements**: Infinite scroll pagination for object listings
+- **S3s upgrade**: Migrated to v0.11.1 tagged release for stability
+- **Performance**: Optimized path handling to eliminate getcwd() syscalls in async operations
+
+## Architecture Decisions
+
+- **Library extraction**: Core CAS/metadata logic separated into `cas-storage` crate for reusability across different protocols
+- **Metrics abstraction**: Trait-based `MetricsCollector` system allows pluggable implementations (Prometheus, StatsD, etc.)
+- **Multi-user isolation**: Per-user CasFS instances with shared block-level deduplication
+- **Storage backends**: Transactional (fjall) vs non-transactional (fjall_notx) modes for different durability/performance tradeoffs
+
+---
+
 ## Key Constants
 
 ### Storage and Block Management
