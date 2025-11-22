@@ -92,6 +92,13 @@ pub struct ServerConfig {
         help = "Log level (error, warn, info, debug, trace). Can also be set via RUST_LOG env var"
     )]
     log_level: String,
+
+    #[arg(
+        long,
+        default_value = "5",
+        help = "Maximum concurrent block writes during object uploads (default: 5, recommended: 3-12 based on hardware)"
+    )]
+    max_concurrent_block_writes: usize,
 }
 
 #[derive(Debug, Subcommand)]
@@ -219,6 +226,7 @@ async fn run_single_user(
         storage_engine,
         args.inline_metadata_size,
         Some(args.durability),
+        args.max_concurrent_block_writes,
     );
     let s3fs = s3_cas::s3fs::S3FS::new(Arc::new(casfs), metrics.clone());
     let s3fs = s3_cas::metrics::MetricFs::new(s3fs, metrics.clone());
@@ -232,6 +240,7 @@ async fn run_single_user(
             storage_engine,
             args.inline_metadata_size,
             Some(args.durability),
+            args.max_concurrent_block_writes,
         );
 
         let http_ui_username = args.http_ui_username.clone();
@@ -309,6 +318,7 @@ async fn run_multi_user(
         storage_engine,
         args.inline_metadata_size,
         Some(args.durability),
+        args.max_concurrent_block_writes,
     ));
 
     let user_count = user_store.count_users()?;
