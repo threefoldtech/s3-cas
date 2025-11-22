@@ -95,6 +95,7 @@ pub struct CasFS {
     block_tree: Arc<BlockTree>,
     shared_path_tree: Option<Arc<dyn BaseMetaTree>>,
     shared_meta_store: Option<Arc<MetaStore>>,
+    max_concurrent_block_writes: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +130,7 @@ impl CasFS {
         storage_engine: StorageEngine,
         inlined_metadata_size: Option<usize>,
         durability: Option<Durability>,
+        max_concurrent_block_writes: usize,
     ) -> Self {
         meta_path.push("db");
         root.push("blocks");
@@ -168,6 +170,7 @@ impl CasFS {
             block_tree: Arc::new(block_tree),
             shared_path_tree: None, // Single-user mode
             shared_meta_store: None, // Single-user mode
+            max_concurrent_block_writes,
         }
     }
 
@@ -195,6 +198,7 @@ impl CasFS {
         storage_engine: StorageEngine,
         inlined_metadata_size: Option<usize>,
         durability: Option<Durability>,
+        max_concurrent_block_writes: usize,
     ) -> Self {
         user_meta_path.push("db");
         root.push("blocks");
@@ -227,6 +231,7 @@ impl CasFS {
             block_tree: shared_block_tree,
             shared_path_tree: Some(shared_path_tree),
             shared_meta_store: Some(shared_meta_store),
+            max_concurrent_block_writes,
         }
     }
 
@@ -537,9 +542,7 @@ impl CasFS {
         })
         .zip(stream::repeat((tx, old_obj_meta)))
         .enumerate()
-        .for_each(
-            // 1,
-            |(idx, (maybe_chunk, (mut tx, old_obj_meta)))| async move {
+        .map(|(idx, (maybe_chunk, (mut tx, old_obj_meta)))| async move {
                 if let Err(e) = maybe_chunk {
                     if let Err(e) = tx
                         .send(Err(std::io::Error::new(e.kind(), e.to_string())))
@@ -651,8 +654,9 @@ impl CasFS {
                 if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
                     tracing::error!(error = %e, "Could not send block id");
                 }
-            },
-        )
+            })
+        .buffer_unordered(self.max_concurrent_block_writes)
+        .for_each(|_| async {})
         .await;
 
         let mut ids = rx.try_collect::<Vec<(usize, BlockID)>>().await?;
@@ -716,6 +720,7 @@ mod tests {
             storage_engine,
             Some(1),
             Some(Durability::Buffer),
+            5, // max_concurrent_block_writes for tests
         );
         (fs, dir)
     }
