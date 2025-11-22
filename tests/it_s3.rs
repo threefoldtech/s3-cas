@@ -87,6 +87,7 @@ static CONFIG: Lazy<SdkConfig> = Lazy::new(|| {
         storage_engine,
         inlined_size,
         None,
+        5, // max_concurrent_block_writes for tests
     );
     let s3fs = s3_cas::s3fs::S3FS::new(Arc::new(casfs), metrics.clone());
 
