@@ -22,6 +22,10 @@ use hyper::{Method, Request, Response, StatusCode};
 use cas_storage::CasFS;
 use crate::metrics::SharedMetrics;
 
+use http_body_util::combinators::BoxBody;
+
+pub type HttpBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
 /// HTTP UI service for browsing CAS storage
 #[derive(Clone)]
 pub struct HttpUiService {
@@ -44,11 +48,11 @@ impl HttpUiService {
     pub async fn handle_request(
         &self,
         req: Request<hyper::body::Incoming>,
-    ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    ) -> Result<Response<HttpBody>, std::convert::Infallible> {
         // Check authentication if enabled
         if let Some(ref auth) = self.auth {
             if !auth.check_auth(&req) {
-                return Ok(auth.auth_required_response());
+                return Ok(responses::map_response(auth.auth_required_response()));
             }
         }
 
@@ -56,7 +60,7 @@ impl HttpUiService {
         Ok(result)
     }
 
-    async fn route_request(&self, req: Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
+    async fn route_request(&self, req: Request<hyper::body::Incoming>) -> Response<HttpBody> {
         let path = req.uri().path();
         let method = req.method();
         let wants_html = self.wants_html(&req);
@@ -68,6 +72,9 @@ impl HttpUiService {
             (&Method::GET, "/buckets") => handlers::list_buckets(&self.casfs, wants_html, None).await,
             (&Method::GET, path) if path.starts_with("/buckets/") => {
                 self.handle_bucket_path(path, wants_html, &req).await
+            }
+            (&Method::GET, path) if path.starts_with("/download/") => {
+                self.handle_download_path(path).await
             }
             (&Method::GET, path) if path.starts_with("/api/v1/buckets/") => {
                 self.handle_api_path(path, &req).await
@@ -103,13 +110,14 @@ impl HttpUiService {
         !req.uri().path().starts_with("/api/")
     }
 
-    async fn handle_root(&self, wants_html: bool) -> Response<Full<Bytes>> {
+    async fn handle_root(&self, wants_html: bool) -> Response<HttpBody> {
         if wants_html {
-            Response::builder()
+            let resp = Response::builder()
                 .status(StatusCode::MOVED_PERMANENTLY)
                 .header("location", "/buckets")
                 .body(Full::new(Bytes::new()))
-                .unwrap()
+                .unwrap();
+            responses::map_response(resp)
         } else {
             let info = serde_json::json!({
                 "name": "s3-cas HTTP API",
@@ -118,6 +126,7 @@ impl HttpUiService {
                     "/buckets": "List all buckets",
                     "/buckets/{bucket}": "List objects in bucket",
                     "/buckets/{bucket}/{key}": "Get object metadata",
+                    "/download/{bucket}/{key}": "Download object",
                     "/api/v1/buckets": "List buckets (JSON)",
                     "/api/v1/buckets/{bucket}": "List objects (JSON)",
                     "/api/v1/buckets/{bucket}/objects/{key}": "Object metadata (JSON)",
@@ -128,7 +137,7 @@ impl HttpUiService {
         }
     }
 
-    async fn handle_health(&self) -> Response<Full<Bytes>> {
+    async fn handle_health(&self) -> Response<HttpBody> {
         let health = serde_json::json!({
             "status": "healthy",
             "storage": "operational"
@@ -141,7 +150,7 @@ impl HttpUiService {
         path: &str,
         wants_html: bool,
         req: &Request<hyper::body::Incoming>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<HttpBody> {
         let path_parts: Vec<&str> = path
             .trim_start_matches("/buckets/")
             .split('/')
@@ -149,12 +158,38 @@ impl HttpUiService {
             .collect();
 
         match path_parts.as_slice() {
-            [bucket] => handlers::list_objects(&self.casfs, bucket, req, wants_html).await,
+            [bucket] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
+                handlers::list_objects(&self.casfs, &bucket, req, wants_html).await
+            },
             [bucket, key @ ..] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
                 let object_key = key.join("/");
-                handlers::object_metadata(&self.casfs, bucket, &object_key, wants_html).await
+                let object_key = urlencoding::decode(&object_key).unwrap_or(std::borrow::Cow::Borrowed(&object_key));
+                handlers::object_metadata(&self.casfs, &bucket, &object_key, wants_html).await
             }
             _ => responses::error_response(StatusCode::BAD_REQUEST, "Invalid path", wants_html),
+        }
+    }
+
+    async fn handle_download_path(
+        &self,
+        path: &str,
+    ) -> Response<HttpBody> {
+        let path_parts: Vec<&str> = path
+            .trim_start_matches("/download/")
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        match path_parts.as_slice() {
+            [bucket, key @ ..] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
+                let object_key = key.join("/");
+                let object_key = urlencoding::decode(&object_key).unwrap_or(std::borrow::Cow::Borrowed(&object_key));
+                handlers::download_object(&self.casfs, &bucket, &object_key).await
+            }
+            _ => responses::error_response(StatusCode::BAD_REQUEST, "Invalid download path", false),
         }
     }
 
@@ -162,7 +197,7 @@ impl HttpUiService {
         &self,
         path: &str,
         req: &Request<hyper::body::Incoming>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<HttpBody> {
         let path_parts: Vec<&str> = path
             .trim_start_matches("/api/v1/buckets/")
             .split('/')
@@ -170,10 +205,15 @@ impl HttpUiService {
             .collect();
 
         match path_parts.as_slice() {
-            [bucket] => handlers::list_objects(&self.casfs, bucket, req, false).await,
+            [bucket] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
+                handlers::list_objects(&self.casfs, &bucket, req, false).await
+            },
             [bucket, "objects", key @ ..] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
                 let object_key = key.join("/");
-                handlers::object_metadata(&self.casfs, bucket, &object_key, false).await
+                let object_key = urlencoding::decode(&object_key).unwrap_or(std::borrow::Cow::Borrowed(&object_key));
+                handlers::object_metadata(&self.casfs, &bucket, &object_key, false).await
             }
             _ => responses::error_response(StatusCode::BAD_REQUEST, "Invalid API path", false),
         }
@@ -218,12 +258,12 @@ impl HttpUiServiceMultiUser {
     pub async fn handle_request(
         &self,
         req: Request<hyper::body::Incoming>,
-    ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    ) -> Result<Response<HttpBody>, std::convert::Infallible> {
         let result = self.route_request(req).await;
         Ok(result)
     }
 
-    async fn route_request(&self, req: Request<hyper::body::Incoming>) -> Response<Full<Bytes>> {
+    async fn route_request(&self, req: Request<hyper::body::Incoming>) -> Response<HttpBody> {
         let path = req.uri().path().to_string();
         let method = req.method().clone();
 
@@ -290,7 +330,7 @@ impl HttpUiServiceMultiUser {
         current_user_id: &str,
         path: &str,
         method: &Method,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<HttpBody> {
         match (method, path) {
             (&Method::GET, "/admin/users") => admin::handle_list_users(self.user_store.clone()).await,
             (&Method::GET, "/admin/users/new") => admin::handle_new_user_form().await,
@@ -321,7 +361,7 @@ impl HttpUiServiceMultiUser {
                     .trim_end_matches("/password");
                 admin::handle_update_password(user_id, req, self.user_store.clone(), self.session_store.clone(), self.metrics.clone()).await
             }
-            _ => responses::not_found(true),
+            _ => return responses::not_found(true),
         }
     }
 
@@ -332,7 +372,7 @@ impl HttpUiServiceMultiUser {
         is_admin: bool,
         path: &str,
         method: &Method,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<HttpBody> {
         // Get CasFS for this user
         let casfs = match self.user_router.get_casfs_by_user_id(user_id) {
             Ok(cf) => cf,
@@ -367,6 +407,9 @@ impl HttpUiServiceMultiUser {
             (&Method::GET, path) if path.starts_with("/buckets/") => {
                 self.handle_bucket_path(&casfs, path, wants_html, &req).await
             }
+            (&Method::GET, path) if path.starts_with("/download/") => {
+                self.handle_download_path(&casfs, path).await
+            }
             (&Method::GET, path) if path.starts_with("/api/v1/buckets/") => {
                 self.handle_api_path(&casfs, path, &req).await
             }
@@ -374,13 +417,14 @@ impl HttpUiServiceMultiUser {
         }
     }
 
-    async fn handle_root(&self, wants_html: bool) -> Response<Full<Bytes>> {
+    async fn handle_root(&self, wants_html: bool) -> Response<HttpBody> {
         if wants_html {
-            Response::builder()
+            let resp = Response::builder()
                 .status(StatusCode::MOVED_PERMANENTLY)
                 .header("location", "/buckets")
                 .body(Full::new(Bytes::new()))
-                .unwrap()
+                .unwrap();
+            responses::map_response(resp)
         } else {
             let info = serde_json::json!({
                 "name": "s3-cas HTTP API (Multi-User)",
@@ -391,6 +435,7 @@ impl HttpUiServiceMultiUser {
                     "/buckets": "List all buckets",
                     "/buckets/{bucket}": "List objects in bucket",
                     "/buckets/{bucket}/{key}": "Get object metadata",
+                    "/download/{bucket}/{key}": "Download object",
                     "/admin/users": "User management (admin only)",
                     "/health": "Health check"
                 }
@@ -399,7 +444,7 @@ impl HttpUiServiceMultiUser {
         }
     }
 
-    async fn handle_health(&self) -> Response<Full<Bytes>> {
+    async fn handle_health(&self) -> Response<HttpBody> {
         let health = serde_json::json!({
             "status": "healthy",
             "storage": "operational",
@@ -414,7 +459,7 @@ impl HttpUiServiceMultiUser {
         path: &str,
         wants_html: bool,
         req: &Request<hyper::body::Incoming>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<HttpBody> {
         let path_parts: Vec<&str> = path
             .trim_start_matches("/buckets/")
             .split('/')
@@ -422,12 +467,39 @@ impl HttpUiServiceMultiUser {
             .collect();
 
         match path_parts.as_slice() {
-            [bucket] => handlers::list_objects(casfs, bucket, req, wants_html).await,
+            [bucket] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
+                handlers::list_objects(casfs, &bucket, req, wants_html).await
+            },
             [bucket, key @ ..] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
                 let object_key = key.join("/");
-                handlers::object_metadata(casfs, bucket, &object_key, wants_html).await
+                let object_key = urlencoding::decode(&object_key).unwrap_or(std::borrow::Cow::Borrowed(&object_key));
+                handlers::object_metadata(casfs, &bucket, &object_key, wants_html).await
             }
             _ => responses::error_response(StatusCode::BAD_REQUEST, "Invalid path", wants_html),
+        }
+    }
+
+    async fn handle_download_path(
+        &self,
+        casfs: &Arc<CasFS>,
+        path: &str,
+    ) -> Response<HttpBody> {
+        let path_parts: Vec<&str> = path
+            .trim_start_matches("/download/")
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        match path_parts.as_slice() {
+            [bucket, key @ ..] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
+                let object_key = key.join("/");
+                let object_key = urlencoding::decode(&object_key).unwrap_or(std::borrow::Cow::Borrowed(&object_key));
+                handlers::download_object(casfs, &bucket, &object_key).await
+            }
+            _ => responses::error_response(StatusCode::BAD_REQUEST, "Invalid download path", false),
         }
     }
 
@@ -436,7 +508,7 @@ impl HttpUiServiceMultiUser {
         casfs: &Arc<CasFS>,
         path: &str,
         req: &Request<hyper::body::Incoming>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<HttpBody> {
         let path_parts: Vec<&str> = path
             .trim_start_matches("/api/v1/buckets/")
             .split('/')
@@ -444,10 +516,15 @@ impl HttpUiServiceMultiUser {
             .collect();
 
         match path_parts.as_slice() {
-            [bucket] => handlers::list_objects(casfs, bucket, req, false).await,
+            [bucket] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
+                handlers::list_objects(casfs, &bucket, req, false).await
+            },
             [bucket, "objects", key @ ..] => {
+                let bucket = urlencoding::decode(bucket).unwrap_or(std::borrow::Cow::Borrowed(bucket));
                 let object_key = key.join("/");
-                handlers::object_metadata(casfs, bucket, &object_key, false).await
+                let object_key = urlencoding::decode(&object_key).unwrap_or(std::borrow::Cow::Borrowed(&object_key));
+                handlers::object_metadata(casfs, &bucket, &object_key, false).await
             }
             _ => responses::error_response(StatusCode::BAD_REQUEST, "Invalid API path", false),
         }
@@ -493,7 +570,7 @@ impl HttpUiServiceEnum {
     pub async fn handle_request(
         &self,
         req: Request<hyper::body::Incoming>,
-    ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    ) -> Result<Response<HttpBody>, std::convert::Infallible> {
         match self {
             HttpUiServiceEnum::SingleUser(service) => service.handle_request(req).await,
             HttpUiServiceEnum::MultiUser(service) => service.handle_request(req).await,

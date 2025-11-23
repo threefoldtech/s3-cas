@@ -8,7 +8,7 @@ use tracing;
 use crate::auth::{SessionStore, UserRecord, UserStore};
 use crate::metrics::SharedMetrics;
 
-use super::{responses, templates};
+use super::{responses, templates, HttpBody};
 
 /// Generates a random S3 access key (20 characters, alphanumeric uppercase)
 fn generate_access_key() -> String {
@@ -47,7 +47,7 @@ fn generate_password() -> String {
 }
 
 /// Handles GET /admin/users - lists all users
-pub async fn handle_list_users(user_store: Arc<UserStore>) -> Response<Full<Bytes>> {
+pub async fn handle_list_users(user_store: Arc<UserStore>) -> Response<HttpBody> {
     match user_store.list_users() {
         Ok(users) => {
             responses::html_response(StatusCode::OK, templates::admin_users_page(&users))
@@ -63,7 +63,7 @@ pub async fn handle_list_users(user_store: Arc<UserStore>) -> Response<Full<Byte
 }
 
 /// Handles GET /admin/users/new - displays user creation form
-pub async fn handle_new_user_form() -> Response<Full<Bytes>> {
+pub async fn handle_new_user_form() -> Response<HttpBody> {
     responses::html_response(StatusCode::OK, templates::new_user_form())
 }
 
@@ -72,7 +72,7 @@ pub async fn handle_create_user(
     req: Request<Incoming>,
     user_store: Arc<UserStore>,
     metrics: SharedMetrics,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Parse form data
     let body_bytes = match req.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -183,7 +183,7 @@ pub async fn handle_delete_user(
     user_store: Arc<UserStore>,
     session_store: Arc<SessionStore>,
     metrics: SharedMetrics,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Delete all sessions for this user
     session_store.delete_user_sessions(user_id);
 
@@ -205,7 +205,7 @@ pub async fn handle_delete_user(
 pub async fn handle_reset_password_form(
     user_id: &str,
     user_store: Arc<UserStore>,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     match user_store.get_user_by_id(user_id) {
         Ok(Some(user)) => {
             responses::html_response(StatusCode::OK, templates::reset_password_form(&user))
@@ -231,7 +231,7 @@ pub async fn handle_update_password(
     user_store: Arc<UserStore>,
     session_store: Arc<SessionStore>,
     metrics: SharedMetrics,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Parse form data
     let body_bytes = match req.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -279,14 +279,15 @@ pub async fn handle_update_password(
 }
 
 /// Helper to create a redirect response with error message
-fn redirect_with_error(location: &str, error: &str) -> Response<Full<Bytes>> {
+fn redirect_with_error(location: &str, error: &str) -> Response<HttpBody> {
     let redirect_url = format!("{}?error={}", location, urlencoding::encode(error));
 
-    Response::builder()
+    let resp = Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, redirect_url)
         .body(Full::new(Bytes::from("Redirecting")))
-        .unwrap()
+        .unwrap();
+    responses::map_response(resp)
 }
 
 /// Handles POST /admin/users/{user_id}/toggle-admin - toggles admin status
@@ -295,7 +296,7 @@ pub async fn handle_toggle_admin(
     current_user_id: &str,
     user_store: Arc<UserStore>,
     metrics: SharedMetrics,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Prevent users from removing their own admin rights
     if user_id == current_user_id {
         return redirect_with_error("/admin/users", "You cannot modify your own admin rights");
@@ -340,14 +341,15 @@ pub async fn handle_toggle_admin(
 }
 
 /// Helper to create a redirect response with success message
-fn redirect_with_success(location: &str, message: &str) -> Response<Full<Bytes>> {
+fn redirect_with_success(location: &str, message: &str) -> Response<HttpBody> {
     let redirect_url = format!("{}?success={}", location, urlencoding::encode(message));
 
-    Response::builder()
+    let resp = Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, redirect_url)
         .body(Full::new(Bytes::from("Redirecting")))
-        .unwrap()
+        .unwrap();
+    responses::map_response(resp)
 }
 
 #[cfg(test)]
