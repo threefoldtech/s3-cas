@@ -37,7 +37,6 @@ pub struct UserRouter {
     storage_engine: StorageEngine,
     inlined_metadata_size: Option<usize>,
     durability: Option<Durability>,
-    max_concurrent_block_writes: usize,
 }
 
 impl UserRouter {
@@ -59,7 +58,6 @@ impl UserRouter {
         storage_engine: StorageEngine,
         inlined_metadata_size: Option<usize>,
         durability: Option<Durability>,
-        max_concurrent_block_writes: usize,
     ) -> Self {
         Self {
             shared_block_store,
@@ -70,7 +68,6 @@ impl UserRouter {
             storage_engine,
             inlined_metadata_size,
             durability,
-            max_concurrent_block_writes,
         }
     }
 
@@ -91,7 +88,6 @@ impl UserRouter {
             self.storage_engine,
             self.inlined_metadata_size,
             self.durability,
-            self.max_concurrent_block_writes,
         );
 
         Arc::new(casfs)
