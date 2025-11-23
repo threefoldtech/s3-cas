@@ -74,7 +74,7 @@ pub fn buckets_page_with_user(buckets: &[BucketInfo], is_admin: bool) -> String 
                     @for bucket in buckets {
                         tr {
                             td {
-                                a href={ "/buckets/" (&bucket.name) } {
+                                a href={ "/buckets/" (urlencoding::encode(&bucket.name)) } {
                                     (&bucket.name)
                                 }
                             }
@@ -111,7 +111,7 @@ pub fn buckets_page(buckets: &[BucketInfo]) -> String {
                     @for bucket in buckets {
                         tr {
                             td {
-                                a href={ "/buckets/" (&bucket.name) } {
+                                a href={ "/buckets/" (urlencoding::encode(&bucket.name)) } {
                                     (&bucket.name)
                                 }
                             }
@@ -139,7 +139,7 @@ pub fn objects_page(response: &ObjectListResponse) -> String {
         div class="breadcrumb" {
             a href="/buckets" { "Buckets" }
             " / "
-            a href={ "/buckets/" (response.bucket) } { (response.bucket) }
+            a href={ "/buckets/" (urlencoding::encode(&response.bucket)) } { (response.bucket) }
             @if !breadcrumb_parts.is_empty() {
                 @for (i, part) in breadcrumb_parts.iter().enumerate() {
                     " / "
@@ -147,7 +147,7 @@ pub fn objects_page(response: &ObjectListResponse) -> String {
                         strong { (part) }
                     } @else {
                         @let prefix = breadcrumb_parts[..=i].join("/") + "/";
-                        a href={ "/buckets/" (response.bucket) "?prefix=" (urlencoding::encode(&prefix)) } {
+                        a href={ "/buckets/" (urlencoding::encode(&response.bucket)) "?prefix=" (urlencoding::encode(&prefix)) } {
                             (part)
                         }
                     }
@@ -183,7 +183,7 @@ pub fn objects_page(response: &ObjectListResponse) -> String {
                     @for dir in &response.directories {
                         tr class="directory-row" {
                             td {
-                                a href={ "/buckets/" (response.bucket) "?prefix=" (urlencoding::encode(&dir.prefix)) } {
+                                a href={ "/buckets/" (urlencoding::encode(&response.bucket)) "?prefix=" (urlencoding::encode(&dir.prefix)) } {
                                     "📁 " (dir.name)
                                 }
                             }
@@ -196,16 +196,19 @@ pub fn objects_page(response: &ObjectListResponse) -> String {
                     @for obj in &response.objects {
                         tr {
                             td {
-                                a href={ "/buckets/" (response.bucket) "/" (obj.key) } {
+                                @let encoded_key = obj.key.split('/').map(|s| urlencoding::encode(s)).collect::<Vec<_>>().join("/");
+                                a href={ "/download/" (urlencoding::encode(&response.bucket)) "/" (encoded_key) } {
                                     "📄 " (obj.key.rsplit('/').next().unwrap_or(&obj.key))
                                 }
                             }
                             td class="number" { (format_size(obj.size)) }
                             td {
-                                @if obj.is_inlined {
-                                    span class="badge inline" { "inline" }
-                                } @else {
-                                    span class="badge blocks" { "blocks" }
+                                a href={ "/buckets/" (urlencoding::encode(&response.bucket)) "/" (encoded_key) } {
+                                    @if obj.is_inlined {
+                                        span class="badge inline" { "inline" }
+                                    } @else {
+                                        span class="badge blocks" { "blocks" }
+                                    }
                                 }
                             }
                             td { (obj.last_modified) }
@@ -290,14 +293,19 @@ pub fn objects_page(response: &ObjectListResponse) -> String {
                                     const fileName = obj.key.split('/').pop() || obj.key;
                                     const typeClass = obj.is_inlined ? 'inline' : 'blocks';
                                     const typeLabel = obj.is_inlined ? 'inline' : 'blocks';
+                                    const encodedKey = obj.key.split('/').map(encodeURIComponent).join('/');
                                     row.innerHTML = `
                                         <td>
-                                            <a href="/buckets/${{encodeURIComponent(bucket)}}/${{encodeURIComponent(obj.key)}}">
+                                            <a href="/download/${{encodeURIComponent(bucket)}}/${{encodedKey}}">
                                                 📄 ${{escapeHtml(fileName)}}
                                             </a>
                                         </td>
                                         <td class="number">${{formatSize(obj.size)}}</td>
-                                        <td><span class="badge ${{typeClass}}">${{typeLabel}}</span></td>
+                                        <td>
+                                            <a href="/buckets/${{encodeURIComponent(bucket)}}/${{encodedKey}}">
+                                                <span class="badge ${{typeClass}}">${{typeLabel}}</span>
+                                            </a>
+                                        </td>
                                         <td>${{escapeHtml(obj.last_modified)}}</td>
                                     `;
                                     tbody.appendChild(row);
@@ -355,7 +363,7 @@ pub fn object_detail_page(metadata: &ObjectMetadata) -> String {
         div class="breadcrumb" {
             a href="/buckets" { "← Buckets" }
             " / "
-            a href={ "/buckets/" (metadata.bucket) } { (metadata.bucket) }
+            a href={ "/buckets/" (urlencoding::encode(&metadata.bucket)) } { (metadata.bucket) }
             " / "
             strong { (metadata.key) }
         }

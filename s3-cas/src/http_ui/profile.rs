@@ -6,14 +6,14 @@ use tracing::{debug, warn};
 
 use crate::auth::{SessionStore, UserStore};
 
-use super::{responses, templates, SessionAuth};
+use super::{responses, templates, SessionAuth, HttpBody};
 
 /// Handles GET /profile - displays user profile with S3 credentials
 pub async fn handle_profile_page(
     user_id: String,
     user_store: Arc<UserStore>,
     req: Request<Incoming>,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Extract query parameters
     let query = req.uri().query();
 
@@ -60,7 +60,7 @@ pub async fn handle_change_password(
     user_store: Arc<UserStore>,
     session_store: Arc<SessionStore>,
     session_auth: Arc<SessionAuth>,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Parse form data
     let body_bytes = match req.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -136,7 +136,7 @@ pub async fn handle_change_password(
             session_store.delete_user_sessions(&user_id);
 
             // Redirect to login with success message
-            Response::builder()
+            let resp = Response::builder()
                 .status(StatusCode::SEE_OTHER)
                 .header(header::LOCATION, "/login?message=password_changed")
                 .header(
@@ -144,7 +144,8 @@ pub async fn handle_change_password(
                     session_auth.clear_session_cookie(),
                 )
                 .body(Full::new(Bytes::new()))
-                .unwrap()
+                .unwrap();
+            responses::map_response(resp)
         }
         Err(e) => {
             warn!("Failed to update password: {}", e);
@@ -153,11 +154,12 @@ pub async fn handle_change_password(
     }
 }
 
-fn redirect_with_error(path: &str, message: &str) -> Response<Full<Bytes>> {
+fn redirect_with_error(path: &str, message: &str) -> Response<HttpBody> {
     let url = format!("{}?error={}", path, urlencoding::encode(message));
-    Response::builder()
+    let resp = Response::builder()
         .status(StatusCode::SEE_OTHER)
         .header(header::LOCATION, url)
         .body(Full::new(Bytes::new()))
-        .unwrap()
+        .unwrap();
+    responses::map_response(resp)
 }

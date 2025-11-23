@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{convert::TryFrom, sync::RwLock};
+use std::{convert::TryFrom, sync::Mutex};
 
 use fjall::{self, TxPartitionHandle};
 
@@ -16,7 +16,7 @@ pub struct FjallStore {
     keyspace: Arc<fjall::TxKeyspace>,
     inlined_metadata_size: usize,
     durability: fjall::PersistMode,
-    partition_cache: Arc<RwLock<HashMap<String, TxPartitionHandle>>>,
+    partition_cache: Arc<Mutex<HashMap<String, TxPartitionHandle>>>,
 }
 
 impl std::fmt::Debug for FjallStore {
@@ -47,45 +47,30 @@ impl FjallStore {
             Durability::Fdatasync => fjall::PersistMode::SyncAll,
         };
 
-        let store = Self {
+        Self {
             keyspace: Arc::new(tx_keyspace),
             inlined_metadata_size,
             durability,
-            partition_cache: Arc::new(RwLock::new(HashMap::new())),
-        };
-
-        // Pre-warm partition cache with common partitions
-        // This ensures all accesses to these partitions use the fast read-only path
-        for partition_name in ["_BLOCKS", "_PATHS", "_BUCKETS", "_MULTIPART_PARTS"] {
-            let _ = store.get_partition(partition_name);
+            partition_cache: Arc::new(Mutex::new(HashMap::new())),
         }
-
-        store
     }
 
     fn get_partition(&self, name: &str) -> Result<fjall::TxPartitionHandle, MetaError> {
-        // Fast path: try read lock first (most common after warmup)
-        {
-            let cache = self.partition_cache.read().expect("Can read partition cache");
-            if let Some(partition) = cache.get(name) {
-                return Ok(partition.clone());
-            }
-        }
-
-        // Slow path: cache miss, acquire write lock
-        let mut cache = self.partition_cache.write().expect("Can write partition cache");
-
-        // Double-check after acquiring write lock (another thread may have inserted)
-        if let Some(partition) = cache.get(name) {
-            return Ok(partition.clone());
-        }
-
-        // Open partition and insert into cache
-        let partition = self.keyspace
-            .open_partition(name, Default::default())
-            .expect("Can open partition");
-        cache.insert(name.to_string(), partition.clone());
-        Ok(partition)
+        Ok(self
+            .partition_cache
+            .lock()
+            .expect("Can lock partition cache")
+            .entry(name.to_string())
+            .or_insert(
+                // match self.keyspace.open_partition(name, Default::default()) {
+                //     Ok(partition) => Ok(partition),
+                //     Err(e) => Err(MetaError::OtherDBError(e.to_string())),
+                // },
+                self.keyspace
+                    .open_partition(name, Default::default())
+                    .expect("Can open parition"),
+            )
+            .clone())
     }
 
     fn commit_persist(&self, tx: fjall::WriteTransaction) -> Result<(), MetaError> {
@@ -134,6 +119,7 @@ impl Store for FjallStore {
     }
 
     fn begin_transaction(&self) -> Transaction {
+        tracing::debug!(target: "cas_storage::locks", "Transaction started");
         // Use unsafe to extend lifetime to 'static since the transaction
         // won't outlive the store
         let tx = unsafe {
@@ -175,7 +161,10 @@ unsafe impl Sync for FjallTransaction {}
 impl TransactionBackend for FjallTransaction {
     fn commit(&mut self) -> Result<(), MetaError> {
         if let Some(tx) = self.tx.take() {
-            self.store.commit_persist(tx)
+            tracing::debug!(target: "cas_storage::locks", "Transaction commit started");
+            let res = self.store.commit_persist(tx);
+            tracing::debug!(target: "cas_storage::locks", "Transaction commit finished");
+            res
         } else {
             Err(MetaError::TransactionError(
                 "Transaction already rolled back".to_string(),
@@ -185,6 +174,7 @@ impl TransactionBackend for FjallTransaction {
 
     fn rollback(&mut self) {
         if let Some(tx) = self.tx.take() {
+            tracing::debug!(target: "cas_storage::locks", "Transaction rollback");
             tx.rollback();
         }
     }

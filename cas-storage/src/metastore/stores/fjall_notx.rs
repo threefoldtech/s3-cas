@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use fjall;
 
@@ -15,7 +14,6 @@ use crate::metastore::{
 pub struct FjallStoreNotx {
     keyspace: Arc<fjall::Keyspace>,
     inlined_metadata_size: usize,
-    partition_cache: Arc<RwLock<HashMap<String, fjall::PartitionHandle>>>,
 }
 
 impl std::fmt::Debug for FjallStoreNotx {
@@ -34,44 +32,17 @@ impl FjallStoreNotx {
         // setting very low will practically disable it by default
         let inlined_metadata_size = inlined_metadata_size.unwrap_or(1);
 
-        let store = Self {
+        Self {
             keyspace: Arc::new(keyspace),
             inlined_metadata_size,
-            partition_cache: Arc::new(RwLock::new(HashMap::new())),
-        };
-
-        // Pre-warm partition cache with common partitions
-        // This ensures all accesses to these partitions use the fast read-only path
-        for partition_name in ["_BLOCKS", "_PATHS", "_BUCKETS", "_MULTIPART_PARTS"] {
-            let _ = store.get_partition(partition_name);
         }
-
-        store
     }
 
     fn get_partition(&self, name: &str) -> Result<fjall::PartitionHandle, MetaError> {
-        // Fast path: try read lock first (most common after warmup)
-        {
-            let cache = self.partition_cache.read().expect("Can read partition cache");
-            if let Some(partition) = cache.get(name) {
-                return Ok(partition.clone());
-            }
+        match self.keyspace.open_partition(name, Default::default()) {
+            Ok(partition) => Ok(partition),
+            Err(e) => Err(MetaError::OtherDBError(e.to_string())),
         }
-
-        // Slow path: cache miss, acquire write lock
-        let mut cache = self.partition_cache.write().expect("Can write partition cache");
-
-        // Double-check after acquiring write lock (another thread may have inserted)
-        if let Some(partition) = cache.get(name) {
-            return Ok(partition.clone());
-        }
-
-        // Open partition and insert into cache
-        let partition = self.keyspace
-            .open_partition(name, Default::default())
-            .map_err(|e| MetaError::OtherDBError(e.to_string()))?;
-        cache.insert(name.to_string(), partition.clone());
-        Ok(partition)
     }
 
     pub fn get_inlined_metadata_size(&self) -> usize {

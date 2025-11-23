@@ -1,14 +1,14 @@
 use std::collections::HashSet;
 
 use bytes::Bytes;
-use http_body_util::Full;
-use hyper::{Request, Response, StatusCode};
+use http_body_util::{Full, BodyExt, StreamBody};
+use hyper::{Request, Response, StatusCode, body::Frame};
 use serde::Serialize;
 
-use cas_storage::CasFS;
+use cas_storage::{CasFS, BlockStream, RangeRequest};
 use cas_storage::BucketMeta;
 
-use super::{responses, templates};
+use super::{responses, templates, HttpBody};
 
 #[derive(Serialize)]
 pub struct BucketInfo {
@@ -74,7 +74,7 @@ pub async fn list_buckets(
     casfs: &CasFS,
     wants_html: bool,
     is_admin: Option<bool>,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     match casfs.list_buckets() {
         Ok(buckets) => {
             let bucket_infos: Vec<BucketInfo> = buckets.iter().map(BucketInfo::from).collect();
@@ -101,7 +101,7 @@ pub async fn list_objects(
     bucket: &str,
     req: &Request<hyper::body::Incoming>,
     wants_html: bool,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Check if bucket exists
     match casfs.bucket_exists(bucket) {
         Ok(false) => {
@@ -231,7 +231,7 @@ pub async fn object_metadata(
     bucket: &str,
     key: &str,
     wants_html: bool,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     match casfs.get_object_meta(bucket, key) {
         Ok(Some(obj)) => {
             // Get block details
@@ -295,4 +295,62 @@ fn format_timestamp(time: std::time::SystemTime) -> String {
     let datetime = chrono::DateTime::from_timestamp(duration.as_secs() as i64, 0)
         .unwrap_or_default();
     datetime.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+}
+
+pub async fn download_object(
+    casfs: &CasFS,
+    bucket: &str,
+    key: &str,
+) -> Response<HttpBody> {
+    match casfs.get_object_paths(bucket, key) {
+        Ok(Some((obj_meta, paths))) => {
+            let filename = key.rsplit('/').next().unwrap_or(key);
+            let content_disposition = format!("attachment; filename=\"{}\"", filename);
+
+            // Handle inlined data
+            if let Some(data) = obj_meta.inlined() {
+                let body = Full::new(Bytes::from(data.clone()))
+                    .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> { unreachable!() })
+                    .boxed();
+
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/octet-stream")
+                    .header("content-disposition", content_disposition)
+                    .header("content-length", data.len())
+                    .body(body)
+                    .unwrap();
+            }
+
+            // Handle block stream
+            let block_size: usize = paths.iter().map(|(_, size)| size).sum();
+            // Use NoOpMetrics since we don't have access to shared metrics here easily,
+            // or we could pass it down. For now, NoOp is fine for the UI download.
+            let metrics = cas_storage::SharedMetrics::default();
+            let block_stream = BlockStream::new(paths, block_size, RangeRequest::All, metrics);
+
+            // Convert BlockStream (Result<Bytes, Error>) to Stream<Item = Result<Frame<Bytes>, Error>>
+            use futures::StreamExt;
+            let stream = block_stream.map(|res| {
+                res.map(Frame::data)
+                   .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            });
+
+            let body = BodyExt::boxed(StreamBody::new(stream));
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/octet-stream")
+                .header("content-disposition", content_disposition)
+                .header("content-length", block_size)
+                .body(body)
+                .unwrap()
+        }
+        Ok(None) => responses::error_response(StatusCode::NOT_FOUND, "Object not found", false),
+        Err(e) => responses::error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Error getting object: {e}"),
+            false,
+        ),
+    }
 }

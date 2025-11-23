@@ -48,7 +48,6 @@ pub async fn retrieve(args: RetrieveConfig) -> Result<()> {
         storage_engine,
         None,
         None,
-        5, // max_concurrent_block_writes (not used for read operations)
     );
 
     let (obj_meta, paths) = match casfs.get_object_paths(&args.bucket, &args.key)? {

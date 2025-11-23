@@ -26,7 +26,7 @@
 //!     Default::default(),  // metrics
 //!     StorageEngine::Fjall,
 //!     None,  // inline_metadata_size
-//!     Some(Durability::Immediate),
+//!     Some(Durability::Fsync),
 //! );
 //!
 //! // Create bucket
@@ -56,7 +56,7 @@
 //!     PathBuf::from("./data/meta"),
 //!     StorageEngine::Fjall,
 //!     None,
-//!     Some(Durability::Immediate),
+//!     Some(Durability::Fsync),
 //! )?);
 //!
 //! // Create per-user CasFS instances
@@ -70,7 +70,7 @@
 //!     Default::default(),
 //!     StorageEngine::Fjall,
 //!     None,
-//!     Some(Durability::Immediate),
+//!     Some(Durability::Fsync),
 //! );
 //! # Ok(())
 //! # }

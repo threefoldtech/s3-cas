@@ -34,7 +34,6 @@ fn setup_casfs() -> (CasFS, TempDir) {
         storage_engine,
         inlined_metadata_size,
         durability,
-        5, // max_concurrent_block_writes for benchmarking
     );
 
     (fs, dir)
