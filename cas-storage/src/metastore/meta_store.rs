@@ -427,7 +427,7 @@ impl BlockTree {
     ///
     /// # Returns
     /// Success or an error if the removal fails
-    fn remove(&self, key: &[u8]) -> Result<(), MetaError> {
+    pub fn remove(&self, key: &[u8]) -> Result<(), MetaError> {
         self.tree.remove(key)
     }
 

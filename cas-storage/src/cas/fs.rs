@@ -570,7 +570,8 @@ impl CasFS {
                 //      - if the block does not exist, we need to write it to the storage
                 // 2. write the actual block to disk
                 //
-                // we commit the meta database transaction after writing the block to disk
+                // we commit the meta database transaction BEFORE writing the block to disk
+                // to avoid holding the lock during slow I/O operations.
                 //
                 // IMPORTANT: In multi-user mode, use shared MetaStore for block transactions
                 // to ensure blocks are written to the shared _BLOCKS tree, not user-specific tree
@@ -593,6 +594,7 @@ impl CasFS {
                         // the block already exists, no need to write it to the storage
                         pm.block_ignored();
 
+                        tracing::debug!(target: "cas_storage::locks", "Committing metadata transaction (block exists)");
                         Box::new(store_tx).commit().unwrap();
 
                         if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
@@ -603,18 +605,48 @@ impl CasFS {
                     Ok((true, block)) => {
                         // the block does not exist, we need to write it to the storage
                         pm.block_pending();
+                        
+                        // COMMIT IMMEDIATELY to release lock
+                        tracing::debug!(target: "cas_storage::locks", "Committing metadata transaction (new block)");
+                        Box::new(store_tx).commit().unwrap();
+                        
                         block
                     }
                 };
 
-                let mut store_tx = Some(store_tx);
                 // write the actual block to disk
-                // if the disk operation fails, the database transaction is rolled back.
+                // if the disk operation fails, we must manually rollback (compensating transaction)
                 let block_path = block.disk_path(self.root.clone());
-                if let Err(e) = self.async_fs.create_dir_all(block_path.parent().unwrap()) {
-                    if let Some(store_tx) = store_tx.take() {
-                        Box::new(store_tx).rollback();
+                
+                // Helper to cleanup on failure
+                let cleanup_on_failure = || {
+                    // We need to delete the block we just added.
+                    // Since we just added it with rc=1, we can just delete it.
+                    // We accept potential data leakage here if this cleanup fails,
+                    // as per the design principles (leakage is better than data loss).
+                    
+                    // We need to access the block tree to remove the block.
+                    // In multi-user mode, this is in the shared store.
+                    let block_tree = match &self.shared_meta_store {
+                        Some(shared_store) => shared_store.get_block_tree(),
+                        None => self.user_meta_store.get_block_tree(),
+                    };
+                    
+                    if let Ok(tree) = block_tree {
+                        // We can try to remove it directly from the tree.
+                        // This bypasses the transaction for deletion, but since we know 
+                        // we are the only ones who just added it (rc=1), and we are failing, 
+                        // it should be safe to remove.
+                         if let Err(e) = tree.remove(&block_hash) {
+                             tracing::warn!(block = %hex_string(&block_hash), error = %e, "Failed to cleanup orphan block metadata");
+                         } else {
+                             tracing::debug!(block = %hex_string(&block_hash), "Cleaned up orphan block metadata");
+                         }
                     }
+                };
+
+                if let Err(e) = self.async_fs.create_dir_all(block_path.parent().unwrap()) {
+                    cleanup_on_failure();
 
                     if let Err(e) = tx.unbounded_send(Err(e)) {
                         pm.block_write_error();
@@ -623,25 +655,11 @@ impl CasFS {
                     }
                 }
                 if let Err(e) = self.async_fs.write(&block_path, &bytes) {
-                    if let Some(store_tx) = store_tx.take() {
-                        Box::new(store_tx).rollback();
-                    }
+                    cleanup_on_failure();
 
                     if let Err(e) = tx.unbounded_send(Err(e)) {
                         pm.block_write_error();
                         tracing::error!(error = %e, "Could not send block write error");
-                        return;
-                    }
-                }
-
-                // commit the database transaction
-                if let Some(store_tx) = store_tx.take() {
-                    if let Err(err) = Box::new(store_tx).commit() {
-                        // TODO FIXME if the transaction fails, we need to delete the block from the storage
-                        if let Err(e) = tx.unbounded_send(Err(err.into())) {
-                            pm.block_write_error();
-                            tracing::error!(error = %e, "Could not send transaction error");
-                        }
                         return;
                     }
                 }

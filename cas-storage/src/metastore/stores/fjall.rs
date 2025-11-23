@@ -119,6 +119,7 @@ impl Store for FjallStore {
     }
 
     fn begin_transaction(&self) -> Transaction {
+        tracing::debug!(target: "cas_storage::locks", "Transaction started");
         // Use unsafe to extend lifetime to 'static since the transaction
         // won't outlive the store
         let tx = unsafe {
@@ -160,7 +161,10 @@ unsafe impl Sync for FjallTransaction {}
 impl TransactionBackend for FjallTransaction {
     fn commit(&mut self) -> Result<(), MetaError> {
         if let Some(tx) = self.tx.take() {
-            self.store.commit_persist(tx)
+            tracing::debug!(target: "cas_storage::locks", "Transaction commit started");
+            let res = self.store.commit_persist(tx);
+            tracing::debug!(target: "cas_storage::locks", "Transaction commit finished");
+            res
         } else {
             Err(MetaError::TransactionError(
                 "Transaction already rolled back".to_string(),
@@ -170,6 +174,7 @@ impl TransactionBackend for FjallTransaction {
 
     fn rollback(&mut self) {
         if let Some(tx) = self.tx.take() {
+            tracing::debug!(target: "cas_storage::locks", "Transaction rollback");
             tx.rollback();
         }
     }

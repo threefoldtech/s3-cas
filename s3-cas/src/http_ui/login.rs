@@ -8,22 +8,23 @@ use crate::metrics::SharedMetrics;
 
 use crate::auth::{SessionStore, UserStore};
 
-use super::{middleware::SessionAuth, responses, templates};
+use super::{middleware::SessionAuth, responses, templates, HttpBody};
 
 /// Handles GET /login - displays login form or first-time setup
 pub async fn handle_login_page(
     req: Request<Incoming>,
     user_store: Arc<UserStore>,
     session_auth: Arc<SessionAuth>,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Check if already authenticated
     if session_auth.authenticate(&req).is_some() {
         // Already logged in, redirect to buckets
-        return Response::builder()
+        let resp = Response::builder()
             .status(StatusCode::FOUND)
             .header(header::LOCATION, "/buckets")
             .body(Full::new(Bytes::from("Redirecting")))
             .unwrap();
+        return responses::map_response(resp);
     }
 
     // Check if this is first-time setup (no users in database)
@@ -96,7 +97,7 @@ pub async fn handle_login_submit(
     session_store: Arc<SessionStore>,
     session_auth: Arc<SessionAuth>,
     metrics: SharedMetrics,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Parse form data from request body
     let body_bytes = match req.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -156,12 +157,13 @@ pub async fn handle_login_submit(
             );
 
             // Set session cookie and redirect
-            Response::builder()
+            let resp = Response::builder()
                 .status(StatusCode::FOUND)
                 .header(header::LOCATION, redirect_to)
                 .header(header::SET_COOKIE, session_auth.create_session_cookie(&session_id))
                 .body(Full::new(Bytes::from("Login successful")))
-                .unwrap()
+                .unwrap();
+            responses::map_response(resp)
         }
         Ok(None) => {
             // Authentication failed
@@ -186,7 +188,7 @@ pub async fn handle_logout(
     req: Request<Incoming>,
     session_store: Arc<SessionStore>,
     session_auth: Arc<SessionAuth>,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     // Extract session ID from cookie
     if let Some(session_id) = extract_session_id_from_request(&req) {
         tracing::Span::current().record("session_id", &tracing::field::display(&session_id));
@@ -195,12 +197,13 @@ pub async fn handle_logout(
     }
 
     // Clear cookie and redirect to login
-    Response::builder()
+    let resp = Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, "/login")
         .header(header::SET_COOKIE, session_auth.clear_session_cookie())
         .body(Full::new(Bytes::from("Logged out")))
-        .unwrap()
+        .unwrap();
+    responses::map_response(resp)
 }
 
 /// Handles POST /setup-admin - creates the first admin user
@@ -210,7 +213,7 @@ pub async fn handle_setup_admin(
     session_store: Arc<SessionStore>,
     session_auth: Arc<SessionAuth>,
     metrics: SharedMetrics,
-) -> Response<Full<Bytes>> {
+) -> Response<HttpBody> {
     use crate::auth::UserRecord;
 
     // Check if database already has users (prevent duplicate setup)
@@ -328,12 +331,13 @@ pub async fn handle_setup_admin(
         urlencoding::encode(&s3_secret_key)
     );
 
-    Response::builder()
+    let resp = Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, redirect_url)
         .header(header::SET_COOKIE, session_auth.create_session_cookie(&session_id))
         .body(Full::new(Bytes::from("Setup complete")))
-        .unwrap()
+        .unwrap();
+    responses::map_response(resp)
 }
 
 /// Generates a random S3 access key (20 characters, uppercase alphanumeric)
@@ -375,14 +379,15 @@ fn extract_session_id_from_request(req: &Request<Incoming>) -> Option<String> {
 }
 
 /// Helper to create a redirect response with error message
-fn redirect_with_error(location: &str, error: &str) -> Response<Full<Bytes>> {
+fn redirect_with_error(location: &str, error: &str) -> Response<HttpBody> {
     let redirect_url = format!("{}?error={}", location, urlencoding::encode(error));
 
-    Response::builder()
+    let resp = Response::builder()
         .status(StatusCode::FOUND)
         .header(header::LOCATION, redirect_url)
         .body(Full::new(Bytes::from("Redirecting")))
-        .unwrap()
+        .unwrap();
+    responses::map_response(resp)
 }
 
 #[cfg(test)]

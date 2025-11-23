@@ -5,6 +5,7 @@ use hyper::{header, Request, Response, StatusCode};
 use std::sync::Arc;
 
 use crate::auth::{SessionStore, UserStore};
+use super::{responses, HttpBody};
 
 /// Session cookie name
 pub const SESSION_COOKIE_NAME: &str = "session_id";
@@ -94,24 +95,25 @@ impl SessionAuth {
     }
 
     /// Returns 302 redirect to login page
-    pub fn login_redirect_response(&self, original_path: &str) -> Response<Full<Bytes>> {
+    pub fn login_redirect_response(&self, original_path: &str) -> Response<HttpBody> {
         let redirect_url = if original_path == "/" || original_path.is_empty() {
             "/login".to_string()
         } else {
             format!("/login?redirect={}", urlencoding::encode(original_path))
         };
 
-        Response::builder()
+        let resp = Response::builder()
             .status(StatusCode::FOUND)
             .header(header::LOCATION, redirect_url)
             .header(header::CONTENT_TYPE, "text/plain")
             .body(Full::new(Bytes::from("Redirecting to login")))
-            .unwrap()
+            .unwrap();
+        responses::map_response(resp)
     }
 
     /// Returns 403 Forbidden response (for admin-only routes)
-    pub fn forbidden_response(&self) -> Response<Full<Bytes>> {
-        Response::builder()
+    pub fn forbidden_response(&self) -> Response<HttpBody> {
+        let resp = Response::builder()
             .status(StatusCode::FORBIDDEN)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
             .body(Full::new(Bytes::from(
@@ -125,7 +127,8 @@ impl SessionAuth {
 </body>
 </html>"#,
             )))
-            .unwrap()
+            .unwrap();
+        responses::map_response(resp)
     }
 
     /// Creates a session cookie
