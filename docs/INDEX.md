@@ -27,7 +27,6 @@ number when written):
 - remove `rusoto_core::ByteStream` from the library surface
 - per-user metrics and quotas
 - expand integration tests and bring benches into CI
-- `s3-cas presign` CLI helper (executes ADR-006 Deliverable B)
 - HTTP exposure PRD: picks one of ADR-007 Options A / B / C with
   justification
 - retire `MetricFs` + `S3UserRouter` via 2a (merge routing into
@@ -41,7 +40,7 @@ number when written):
 | ADR-002 | Migration from OpenSSL to rustls                            | proposed, partial progress                          |
 | ADR-004 | Drop `async_trait` where we own the trait                   | proposed                                            |
 | ADR-005 | Upgrade `s3s` off `async_trait` before new S3-adjacent work | accepted 2026-04-25; blockade lifted by second-look addendum (same day) - **no longer blocks** |
-| ADR-006 | Presigned URLs via s3s SigV4; optional CLI helper           | proposed                                            |
+| ADR-006 | Presigned URLs via s3s SigV4; optional CLI helper           | accepted 2026-04-25; Deliverable B shipped          |
 | ADR-007 | HTTP exposure options for buckets (option analysis)         | proposed - option analysis, not a commitment        |
 
 ## Architecture notes

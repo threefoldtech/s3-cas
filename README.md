@@ -43,7 +43,6 @@ Output:
 User 'alice' created (admin=true)
   access_key: XXXXXXXXXXXXXXXXXXXX
   secret_key: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-  ui_password: xxxxxxxxxxxxxxxx
 Save these credentials -- they will not be shown again.
 ```
 
@@ -51,7 +50,6 @@ Other subcommands:
 
 ```bash
 s3-cas user --meta-root /tmp/s3/meta list
-s3-cas user --meta-root /tmp/s3/meta reset-password alice
 s3-cas user --meta-root /tmp/s3/meta delete alice
 ```
 
@@ -106,6 +104,35 @@ Prometheus metrics are served on a separate port (default 9100):
 ```
 
 Access at `http://localhost:9100/metrics`.
+
+## Presigned URLs
+
+Hand out a time-limited URL to a single object without needing the AWS
+CLI or `boto3` installed on the host. The subcommand reads the user's
+S3 credentials from the local `_USERS` partition and emits a standard
+AWS SigV4 query-string URL that any S3 client (curl included) will
+accept:
+
+```bash
+s3-cas presign \
+  --meta-root /tmp/s3/meta \
+  --user alice \
+  --endpoint http://localhost:8014 \
+  --ttl 15m \
+  mybucket path/to/file.txt
+```
+
+Prints one URL to stdout. Flags:
+
+- `--ttl <duration>` accepts `30s`, `15m`, `2h`, `1d`. Capped at
+  7 days (SigV4 limit).
+- `--method <GET|PUT|HEAD|DELETE>` defaults to GET.
+- `--region <name>` defaults to `us-east-1`.
+
+The URL verifies server-side via the same SigV4 path a normal request
+uses; no server configuration or state is required. See
+[docs/adr/006-presigned-urls-and-cli-helper.md](docs/adr/006-presigned-urls-and-cli-helper.md)
+for the background.
 
 ## Inspect subcommand
 
