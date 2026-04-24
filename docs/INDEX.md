@@ -37,7 +37,7 @@ number when written):
 | ------- | ----------------------------------------------------------- | --------------------------------------------------- |
 | ADR-002 | Migration from OpenSSL to rustls                            | proposed, partial progress                          |
 | ADR-004 | Drop `async_trait` where we own the trait                   | proposed                                            |
-| ADR-005 | Upgrade `s3s` off `async_trait` before new S3-adjacent work | proposed - **prerequisite for S3-surface features** |
+| ADR-005 | Upgrade `s3s` off `async_trait` before new S3-adjacent work | accepted 2026-04-25, option 2 (local fork) - **prerequisite** |
 | ADR-006 | Presigned URLs via s3s SigV4; optional CLI helper           | proposed                                            |
 | ADR-007 | HTTP exposure options for buckets (option analysis)         | proposed - option analysis, not a commitment        |
 
