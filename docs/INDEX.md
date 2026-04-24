@@ -27,10 +27,11 @@ will not be written as standalone PRDs.)
 
 ## Active ADRs
 
-| ID      | Title                                      | Status                              |
-| ------- | ------------------------------------------ | ----------------------------------- |
-| ADR-002 | Migration from OpenSSL to rustls           | proposed, partial progress          |
-| ADR-004 | Drop `async_trait` where we own the trait  | proposed                            |
+| ID      | Title                                                       | Status                                              |
+| ------- | ----------------------------------------------------------- | --------------------------------------------------- |
+| ADR-002 | Migration from OpenSSL to rustls                            | proposed, partial progress                          |
+| ADR-004 | Drop `async_trait` where we own the trait                   | proposed                                            |
+| ADR-005 | Upgrade `s3s` off `async_trait` before new S3-adjacent work | proposed - **prerequisite for S3-surface features** |
 
 ## Architecture notes
 
