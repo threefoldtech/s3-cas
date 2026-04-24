@@ -1,9 +1,12 @@
 # PRD-002: `s3s` upgrade, Rust edition bump, TLS stack consolidation
 
-Status:      Draft
+Status:      Draft (Deliverable A superseded 2026-04-25 by ADR-005
+             second-look; B and C unchanged)
 Author:      Jan De Landtsheer
-Date:        2026-04-24
-Executes:    docs/adr/005-upgrade-s3s-before-new-work.md (prerequisite)
+Date:        2026-04-24 (Deliverable A supersession dated 2026-04-25)
+Executes:    docs/adr/005-upgrade-s3s-before-new-work.md
+             (Deliverable A closed out; B and C remain relevant to
+             the dep-surface story)
              docs/adr/002-rustls-migration.md              (partial)
 Related:     docs/prd/prd000-current-state-and-restructure.md (parent)
              docs/prd/prd001-cas-storage-internal-restructure.md
@@ -51,7 +54,27 @@ Out of scope (has its own PRD or later work):
 
 ## 4. Deliverable A: `s3s` off `async_trait`
 
-### 4.1 Target state
+> **Superseded 2026-04-25 by ADR-005's second-look addendum.** The
+> premise of this deliverable -- that dropping `#[async_trait]` from
+> the s3s trait surface would let `metric_fwd!` / `route_fwd!` go
+> back to plain `async fn` -- does not hold. `s3s` relies on
+> `Arc<dyn S3>` / `Box<dyn S3Auth>` internally, and native async fn
+> in trait is not dyn-compatible on stable Rust. Any template flip
+> would either break s3s itself or just move the hand-roll from
+> our macros to the fork -- zero net win.
+>
+> What actually retires the macros is a new candidate PRD:
+> **"retire `MetricFs` + `S3UserRouter` via 2a (merge routing into
+> `S3FS`) + 2b (metrics as tower middleware)"** (listed in
+> `docs/INDEX.md`). That PRD, not this deliverable, is the real
+> closer for the hand-rolled macro wart.
+>
+> Deliverables B (edition bump) and C (TLS consolidation) are
+> unaffected and still valid as specified below. The text of
+> Deliverable A is left in place below as the historical record of
+> what we thought would work before we hit the dyn-compat wrinkle.
+
+### 4.1 Target state (historical -- see supersession notice above)
 
 - `s3-cas/Cargo.toml` no longer depends on `async-trait`.
 - `s3fs.rs`, `s3_wrapper.rs`, and `metrics.rs` use plain

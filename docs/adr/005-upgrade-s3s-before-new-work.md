@@ -1,8 +1,9 @@
 # ADR 005: Upgrade `s3s` off `async_trait` before new S3-adjacent work
 
-Status:      Accepted - 2026-04-25 (option 2 chosen, see Addendum) -
-             **Prerequisite: execute before any new feature work that
-             touches the S3 surface.**
+Status:      Accepted - 2026-04-25 - **second-look retired the
+             blockade; see "Second-look addendum 2026-04-25" at the
+             bottom. S3-surface feature work is NOT blocked by this
+             ADR anymore.**
 Author:      Jan De Landtsheer
 Related:     docs/adr/004-drop-async-trait.md
              docs/prd/prd000-current-state-and-restructure.md (PRD-002)
@@ -214,11 +215,11 @@ Concretely:
   regeneration, no behavioural change. The diff is mechanical.
 - Rebase cadence: follow upstream tagged releases, not `main`.
 
-Option 1 is not cancelled -- it is running in parallel as an
-upstream PR (authored by hand, not by this ADR). If the upstream PR
-merges and a release ships before option 2 is complete, abandon the
-fork and switch back to crates.io. The fork is insurance, not a
-commitment to divergence.
+Option 1 is demoted to "future outreach, not on this ADR's critical
+path". Jan may hand-file a PR against `Nugine/s3s` later; if it
+lands and a release ships with native-AFIT, the fork can be
+abandoned in favour of crates.io. But the fork does not wait on
+upstream and does not track an upstream PR timeline.
 
 ### What changes downstream of this decision
 
@@ -244,7 +245,137 @@ eliminate one of the two macro-using wrappers entirely.
 
 ### Open loop
 
-- **Upstream PR.** Hand-written by Jan; not auto-generated from this
-  ADR. Track its number here once filed on `Nugine/s3s`.
+- **Upstream PR.** Optional follow-up; Jan may hand-file against
+  `Nugine/s3s` after the fork is stable. Not on this ADR's critical
+  path. Track here if and when filed.
 - **Fork branch name.** `afit` proposed; create the branch and land
   the codegen template patch, then switch `s3-cas/Cargo.toml` over.
+
+## Second-look addendum 2026-04-25 (same day)
+
+Within hours of writing the above, while starting execution on the
+fork patch, a blocking wrinkle surfaced. This addendum supersedes
+the decision path the earlier addendum locked in.
+
+### What we missed in the original ADR
+
+The original claim -- "rewrite `metric_fwd!` and `route_fwd!` to the
+obvious `async fn` form -- the E0195 error class disappears as soon
+as the trait is not `#[async_trait]`-annotated upstream" -- is
+**wrong** because of a dyn-compatibility constraint that is intrinsic
+to s3s, not a per-release choice.
+
+Verified by reading source on `Nugine/s3s` at tags `v0.11.1`,
+`v0.13.0`, and branch `main` (version `0.14.0-dev`):
+
+- `crates/s3s/src/service.rs` stores the impl as `Arc<dyn S3>`,
+  `Box<dyn S3Auth>`, `Box<dyn S3Host>`, `Box<dyn S3Access>`,
+  `Box<dyn S3Route>` -- and in 0.14.0-dev a new
+  `Arc<dyn S3ConfigProvider>` joins the list. Dyn dispatch is load-
+  bearing across the router.
+- Native `async fn` in trait (stable since Rust 1.75) is **not
+  dyn-compatible** today. Dyn-compat for async fn in trait is still
+  experimental (needs RTN / nightly-only features).
+- `#[async_trait::async_trait]` exists precisely to make such traits
+  dyn-safe, by desugaring every `async fn` method into
+  `fn foo(...) -> Pin<Box<dyn Future + Send + 'async_trait>>`.
+
+Consequences for the three fork strategies:
+
+1. **Drop `#[async_trait]` naively in the codegen template.** Breaks
+   `Arc<dyn S3>`. s3s itself stops compiling. Non-starter.
+2. **Keep the Pin-Box shape by hand-rolling it in the template.**
+   The trait is still dyn-safe, but our `metric_fwd!` /
+   `route_fwd!` impls still must emit the hand-rolled
+   `Pin<Box<dyn Future>>` shape to match. Zero net win -- the
+   hand-roll just moves between our repo and the fork.
+3. **Restructure s3s to not use `dyn S3`.** Turn `Arc<dyn S3>` into
+   `Arc<impl S3>` via generics through the service/router. Heavy
+   change; leaks generics through the s3s public API. Upstream is
+   moving in the opposite direction (0.14.0-dev *adds* another
+   `dyn`-hook, `S3ConfigProvider`), so this is against the grain
+   and not a tractable fork.
+
+### Decision (replaces the earlier addendum's option 2 commitment)
+
+**Lift the ADR-005 blockade. Accept the hand-rolled macros as
+permanent, document them as a known wart, and let new S3-surface
+feature work proceed.**
+
+Concretely:
+
+- The "Blocked by this ADR" list in the Scope section above is now
+  historical -- nothing is blocked by this ADR anymore. New S3
+  protocol methods, new wrappers around `s3s::S3`, per-user metrics,
+  ADR-007 Options A and B, all unblocked as of 2026-04-25.
+- `metric_fwd!` and `route_fwd!` stay as written. Their comment
+  blocks (introduced in commit `7953e35`) already explain why; no
+  code change required for this ADR.
+- The `delandtj/s3s` fork (cloned locally, `afit` branch created
+  from `v0.11.1`, zero commits on top) **is not pushed** and
+  **does not land**. It stays as a vendoring parking spot the day
+  we need to cherry-pick an upstream fix.
+- `s3-cas/Cargo.toml` stays pinned to `Nugine/s3s` tag `v0.11.1`.
+
+### What replaces "flip async_trait off" as the real architectural fix
+
+The hand-rolled macros exist only because we chose to wrap
+`s3s::S3` with `MetricFs` and `S3UserRouter`. The dyn-compat
+constraint makes wrappers expensive; the way out is to stop
+wrapping, not to patch the trait. Two independent moves, either of
+which kills one wrapper + one macro:
+
+- **2a -- merge per-user routing into `S3FS`.** `S3FS` learns to
+  look up the per-user `CasFS` internally from a shared
+  `UserStore`, keyed on the authenticated access key in the
+  request. `S3UserRouter` goes away; `route_fwd!` goes away.
+  Medium scope -- rewrites request entry in `s3fs.rs` and the
+  bootstrap in `main.rs`.
+- **2b -- move `MetricFs` to a `tower::Service` layer in front of
+  s3s.** Metrics get tracked at the HTTP layer, keyed on op-name
+  attribution that either re-parses the request or uses an s3s
+  hook that exposes the resolved op. `MetricFs` goes away;
+  `metric_fwd!` goes away. Smaller scope in terms of surface
+  area but needs op-name attribution sorted.
+
+Neither 2a nor 2b touches the `#[async_trait]` attribute on s3s's
+traits -- they sidestep it by not implementing those traits a
+second time.
+
+Tracked as a candidate PRD ("retire `MetricFs` + `S3UserRouter`
+via 2a+2b") in `docs/INDEX.md`. That PRD is the real closer for the
+macro wart. It is not a prerequisite for anything; feature work
+can proceed in parallel.
+
+### Side finding re-affirmed (useful for ADR-007 Option A)
+
+Even with the blockade gone, upstream's hook traits are still
+architecturally cleaner than new `s3s::S3` wrappers:
+
+- `S3Access` (with a general `check(&mut S3AccessContext)` called
+  pre-dispatch) is the natural home for ADR-007 Option A's bucket
+  public-read policy. Only one method needs the hand-rolled
+  macro shape; no 16-method fan-out.
+- `S3Route` handles side routes (health checks, custom endpoints)
+  without touching the S3 trait at all.
+- `S3ConfigProvider` (new in 0.14.0-dev) is not relevant here but
+  worth knowing exists.
+
+When ADR-007 Option A gets a PRD, prefer an `S3Access` impl over a
+new `S3`-trait wrapper.
+
+### Status transitions
+
+- Original claim (first addendum, 2026-04-25 morning): accepted
+  option 2 (local fork via codegen template patch).
+- Second-look (this addendum, 2026-04-25 same day): option 2
+  retired as infeasible given the dyn-compat analysis above;
+  blockade lifted; fork demoted to vendoring parking spot; real
+  architectural fix handed off to a new candidate PRD.
+
+### Open loops replaced
+
+The prior "Open loop" entries (upstream PR, fork branch name) are
+no longer on this ADR's critical path. If Jan still wants to file
+an upstream PR or land a vendoring branch later, those are
+independent ops items, not ADR-005 deliverables.
