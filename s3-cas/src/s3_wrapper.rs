@@ -100,133 +100,47 @@ impl S3UserRouter {
     }
 }
 
-#[async_trait::async_trait]
+/// Emit a method that resolves the per-user S3FS for this request and
+/// forwards. Expands to the hand-rolled form `#[async_trait]` would
+/// generate, because `macro_rules!` cannot be nested inside an impl block
+/// that carries `#[async_trait]` (the attribute runs before the declarative
+/// macro expands). One line per s3s::S3 method.
+macro_rules! route_fwd {
+    ($method:ident, $input:ty, $output:ty) => {
+        fn $method<'life0, 'async_trait>(
+            &'life0 self,
+            req: S3Request<$input>,
+        ) -> ::core::pin::Pin<Box<
+            dyn ::core::future::Future<Output = S3Result<S3Response<$output>>>
+                + ::core::marker::Send + 'async_trait
+        >>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let s3fs = self.get_s3fs_for_request(&req)?;
+                s3fs.$method(req).await
+            })
+        }
+    };
+}
+
 impl S3 for S3UserRouter {
-    async fn complete_multipart_upload(
-        &self,
-        req: S3Request<CompleteMultipartUploadInput>,
-    ) -> S3Result<S3Response<CompleteMultipartUploadOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.complete_multipart_upload(req).await
-    }
-
-    async fn copy_object(
-        &self,
-        req: S3Request<CopyObjectInput>,
-    ) -> S3Result<S3Response<CopyObjectOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.copy_object(req).await
-    }
-
-    async fn create_bucket(
-        &self,
-        req: S3Request<CreateBucketInput>,
-    ) -> S3Result<S3Response<CreateBucketOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.create_bucket(req).await
-    }
-
-    async fn create_multipart_upload(
-        &self,
-        req: S3Request<CreateMultipartUploadInput>,
-    ) -> S3Result<S3Response<CreateMultipartUploadOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.create_multipart_upload(req).await
-    }
-
-    async fn delete_bucket(
-        &self,
-        req: S3Request<DeleteBucketInput>,
-    ) -> S3Result<S3Response<DeleteBucketOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.delete_bucket(req).await
-    }
-
-    async fn delete_object(
-        &self,
-        req: S3Request<DeleteObjectInput>,
-    ) -> S3Result<S3Response<DeleteObjectOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.delete_object(req).await
-    }
-
-    async fn delete_objects(
-        &self,
-        req: S3Request<DeleteObjectsInput>,
-    ) -> S3Result<S3Response<DeleteObjectsOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.delete_objects(req).await
-    }
-
-    async fn get_bucket_location(
-        &self,
-        req: S3Request<GetBucketLocationInput>,
-    ) -> S3Result<S3Response<GetBucketLocationOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.get_bucket_location(req).await
-    }
-
-    async fn get_object(
-        &self,
-        req: S3Request<GetObjectInput>,
-    ) -> S3Result<S3Response<GetObjectOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.get_object(req).await
-    }
-
-    async fn head_bucket(
-        &self,
-        req: S3Request<HeadBucketInput>,
-    ) -> S3Result<S3Response<HeadBucketOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.head_bucket(req).await
-    }
-
-    async fn head_object(
-        &self,
-        req: S3Request<HeadObjectInput>,
-    ) -> S3Result<S3Response<HeadObjectOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.head_object(req).await
-    }
-
-    async fn list_buckets(
-        &self,
-        req: S3Request<ListBucketsInput>,
-    ) -> S3Result<S3Response<ListBucketsOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.list_buckets(req).await
-    }
-
-    async fn list_objects(
-        &self,
-        req: S3Request<ListObjectsInput>,
-    ) -> S3Result<S3Response<ListObjectsOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.list_objects(req).await
-    }
-
-    async fn list_objects_v2(
-        &self,
-        req: S3Request<ListObjectsV2Input>,
-    ) -> S3Result<S3Response<ListObjectsV2Output>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.list_objects_v2(req).await
-    }
-
-    async fn put_object(
-        &self,
-        req: S3Request<PutObjectInput>,
-    ) -> S3Result<S3Response<PutObjectOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.put_object(req).await
-    }
-
-    async fn upload_part(
-        &self,
-        req: S3Request<UploadPartInput>,
-    ) -> S3Result<S3Response<UploadPartOutput>> {
-        let s3fs = self.get_s3fs_for_request(&req)?;
-        s3fs.upload_part(req).await
-    }
+    route_fwd!(complete_multipart_upload, CompleteMultipartUploadInput, CompleteMultipartUploadOutput);
+    route_fwd!(copy_object, CopyObjectInput, CopyObjectOutput);
+    route_fwd!(create_bucket, CreateBucketInput, CreateBucketOutput);
+    route_fwd!(create_multipart_upload, CreateMultipartUploadInput, CreateMultipartUploadOutput);
+    route_fwd!(delete_bucket, DeleteBucketInput, DeleteBucketOutput);
+    route_fwd!(delete_object, DeleteObjectInput, DeleteObjectOutput);
+    route_fwd!(delete_objects, DeleteObjectsInput, DeleteObjectsOutput);
+    route_fwd!(get_bucket_location, GetBucketLocationInput, GetBucketLocationOutput);
+    route_fwd!(get_object, GetObjectInput, GetObjectOutput);
+    route_fwd!(head_bucket, HeadBucketInput, HeadBucketOutput);
+    route_fwd!(head_object, HeadObjectInput, HeadObjectOutput);
+    route_fwd!(list_buckets, ListBucketsInput, ListBucketsOutput);
+    route_fwd!(list_objects, ListObjectsInput, ListObjectsOutput);
+    route_fwd!(list_objects_v2, ListObjectsV2Input, ListObjectsV2Output);
+    route_fwd!(put_object, PutObjectInput, PutObjectOutput);
+    route_fwd!(upload_part, UploadPartInput, UploadPartOutput);
 }

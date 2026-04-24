@@ -448,6 +448,16 @@ table of contents for the crate.
   against the new binary.
 - No change to the refcount invariant, chunk size, hash, or durability
   knobs.
+- **Do not try to abstract the Fjall backend away.** The graph-coupling
+  analysis shows `cas/fs.rs` and `metastore/stores/fjall.rs` at a
+  change-coupling score of 1.00 -- every historical change to the
+  write path also touched the Fjall backend. That coupling is
+  load-bearing: the write-permit / partition-cache / transaction-shape
+  contract only makes sense when write_path.rs and fjall.rs are co-
+  designed. After the split, write_path.rs will still need to move in
+  lockstep with fjall.rs whenever the tx shape changes; that is
+  correct and not a smell. Adding a second storage backend (sled,
+  redb, whatever) is a separate PRD if it ever happens.
 
 ## 14. Open Questions
 

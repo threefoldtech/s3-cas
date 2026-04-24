@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use cas_storage::MetricsCollector;
 use prometheus::{
     register_int_counter, register_int_counter_vec, register_int_gauge, IntCounter, IntCounterVec,
@@ -256,136 +255,51 @@ impl<T> MetricFs<T> {
     }
 }
 
-#[async_trait]
+/// Emit a method that bumps the method-call counter and forwards to
+/// `self.storage`. Expands to the hand-rolled form `#[async_trait]` would
+/// generate, because `macro_rules!` cannot be nested inside an impl block
+/// that carries `#[async_trait]` (the attribute runs before the declarative
+/// macro expands, so it would not see the generated methods). One line per
+/// s3s::S3 method.
+macro_rules! metric_fwd {
+    ($method:ident, $input:ty, $output:ty) => {
+        fn $method<'life0, 'async_trait>(
+            &'life0 self,
+            req: S3Request<$input>,
+        ) -> ::core::pin::Pin<Box<
+            dyn ::core::future::Future<Output = S3Result<S3Response<$output>>>
+                + ::core::marker::Send + 'async_trait
+        >>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                self.metrics.add_method_call(stringify!($method));
+                self.storage.$method(req).await
+            })
+        }
+    };
+}
+
 impl<T> S3 for MetricFs<T>
 where
     T: S3 + Sync + Send,
 {
-    async fn complete_multipart_upload(
-        &self,
-        req: S3Request<CompleteMultipartUploadInput>,
-    ) -> S3Result<S3Response<CompleteMultipartUploadOutput>> {
-        self.metrics.add_method_call("complete_multipart_upload");
-        self.storage.complete_multipart_upload(req).await
-    }
-
-    async fn copy_object(
-        &self,
-        req: S3Request<CopyObjectInput>,
-    ) -> S3Result<S3Response<CopyObjectOutput>> {
-        self.metrics.add_method_call("copy_object");
-        self.storage.copy_object(req).await
-    }
-
-    async fn create_multipart_upload(
-        &self,
-        req: S3Request<CreateMultipartUploadInput>,
-    ) -> S3Result<S3Response<CreateMultipartUploadOutput>> {
-        self.metrics.add_method_call("create_multipart_upload");
-        self.storage.create_multipart_upload(req).await
-    }
-
-    async fn create_bucket(
-        &self,
-        req: S3Request<CreateBucketInput>,
-    ) -> S3Result<S3Response<CreateBucketOutput>> {
-        self.metrics.add_method_call("create_bucket");
-        self.storage.create_bucket(req).await
-    }
-
-    async fn delete_bucket(
-        &self,
-        req: S3Request<DeleteBucketInput>,
-    ) -> S3Result<S3Response<DeleteBucketOutput>> {
-        self.metrics.add_method_call("delete_bucket");
-        self.storage.delete_bucket(req).await
-    }
-
-    async fn delete_object(
-        &self,
-        req: S3Request<DeleteObjectInput>,
-    ) -> S3Result<S3Response<DeleteObjectOutput>> {
-        self.metrics.add_method_call("delete_object");
-        self.storage.delete_object(req).await
-    }
-
-    async fn delete_objects(
-        &self,
-        req: S3Request<DeleteObjectsInput>,
-    ) -> S3Result<S3Response<DeleteObjectsOutput>> {
-        self.metrics.add_method_call("delete_objects");
-        self.storage.delete_objects(req).await
-    }
-
-    async fn get_bucket_location(
-        &self,
-        req: S3Request<GetBucketLocationInput>,
-    ) -> S3Result<S3Response<GetBucketLocationOutput>> {
-        self.metrics.add_method_call("get_bucket_location");
-        self.storage.get_bucket_location(req).await
-    }
-
-    async fn get_object(
-        &self,
-        req: S3Request<GetObjectInput>,
-    ) -> S3Result<S3Response<GetObjectOutput>> {
-        self.metrics.add_method_call("get_object");
-        self.storage.get_object(req).await
-    }
-
-    async fn head_bucket(
-        &self,
-        req: S3Request<HeadBucketInput>,
-    ) -> S3Result<S3Response<HeadBucketOutput>> {
-        self.metrics.add_method_call("head_bucket");
-        self.storage.head_bucket(req).await
-    }
-
-    async fn head_object(
-        &self,
-        req: S3Request<HeadObjectInput>,
-    ) -> S3Result<S3Response<HeadObjectOutput>> {
-        self.metrics.add_method_call("head_object");
-        self.storage.head_object(req).await
-    }
-
-    async fn list_buckets(
-        &self,
-        req: S3Request<ListBucketsInput>,
-    ) -> S3Result<S3Response<ListBucketsOutput>> {
-        self.metrics.add_method_call("list_buckets");
-        self.storage.list_buckets(req).await
-    }
-
-    async fn list_objects(
-        &self,
-        req: S3Request<ListObjectsInput>,
-    ) -> S3Result<S3Response<ListObjectsOutput>> {
-        self.metrics.add_method_call("list_objects");
-        self.storage.list_objects(req).await
-    }
-
-    async fn list_objects_v2(
-        &self,
-        req: S3Request<ListObjectsV2Input>,
-    ) -> S3Result<S3Response<ListObjectsV2Output>> {
-        self.metrics.add_method_call("list_objects_v2");
-        self.storage.list_objects_v2(req).await
-    }
-
-    async fn put_object(
-        &self,
-        req: S3Request<PutObjectInput>,
-    ) -> S3Result<S3Response<PutObjectOutput>> {
-        self.metrics.add_method_call("put_object");
-        self.storage.put_object(req).await
-    }
-
-    async fn upload_part(
-        &self,
-        req: S3Request<UploadPartInput>,
-    ) -> S3Result<S3Response<UploadPartOutput>> {
-        self.metrics.add_method_call("upload_part");
-        self.storage.upload_part(req).await
-    }
+    metric_fwd!(complete_multipart_upload, CompleteMultipartUploadInput, CompleteMultipartUploadOutput);
+    metric_fwd!(copy_object, CopyObjectInput, CopyObjectOutput);
+    metric_fwd!(create_multipart_upload, CreateMultipartUploadInput, CreateMultipartUploadOutput);
+    metric_fwd!(create_bucket, CreateBucketInput, CreateBucketOutput);
+    metric_fwd!(delete_bucket, DeleteBucketInput, DeleteBucketOutput);
+    metric_fwd!(delete_object, DeleteObjectInput, DeleteObjectOutput);
+    metric_fwd!(delete_objects, DeleteObjectsInput, DeleteObjectsOutput);
+    metric_fwd!(get_bucket_location, GetBucketLocationInput, GetBucketLocationOutput);
+    metric_fwd!(get_object, GetObjectInput, GetObjectOutput);
+    metric_fwd!(head_bucket, HeadBucketInput, HeadBucketOutput);
+    metric_fwd!(head_object, HeadObjectInput, HeadObjectOutput);
+    metric_fwd!(list_buckets, ListBucketsInput, ListBucketsOutput);
+    metric_fwd!(list_objects, ListObjectsInput, ListObjectsOutput);
+    metric_fwd!(list_objects_v2, ListObjectsV2Input, ListObjectsV2Output);
+    metric_fwd!(put_object, PutObjectInput, PutObjectOutput);
+    metric_fwd!(upload_part, UploadPartInput, UploadPartOutput);
 }
