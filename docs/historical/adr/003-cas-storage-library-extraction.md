@@ -1,7 +1,15 @@
 # ADR 003: Extract CAS Storage Layer into Reusable Library
 
 ## Status
-Proposed - 2025-11-20
+Historical (2026-04-24) - Accepted and implemented.
+
+The workspace has two crates: `cas-storage` (library) and `s3-cas`
+(application). All modules described under "What moves to library"
+moved. All modules described under "What stays in s3-cas" stayed.
+`rusoto_core::ByteStream` remains a library dependency; removing it
+is tracked as PRD-003.
+
+---
 
 ## Context
 

@@ -1,7 +1,32 @@
 # ADR 001: Multi-User Authentication and UI Routing
 
 ## Status
-Accepted - 2025-11-17
+Historical (2026-04-24)
+
+Accepted 2025-11-17. Implemented, then partially superseded by the
+`simplify/drop-ui-and-single-user` branch (2026-04-24): the HTTP UI,
+session store, admin panel, and single-user compatibility mode were
+deleted. User management now goes through the `s3-cas user` CLI
+subcommand.
+
+Still in force from this ADR:
+- Separate credentials (UI login/password vs S3 access/secret) on
+  `UserRecord`.
+- `_USERS`, `_USERS_BY_LOGIN`, `_USERS_BY_S3_KEY` partitions on the
+  shared metastore.
+- Dynamic S3 authentication via `DynamicS3Auth` (per-request lookup).
+- Per-user `CasFS` via `UserRouter` with shared block storage.
+
+No longer in force:
+- HTTP UI, session cookies, admin web pages, first-time setup web flow.
+- Backward-compatibility with single-user mode; multi-user is the only
+  mode.
+
+Kept as a historical record of the design that got us here; do not
+read it as current guidance. See `docs/prd/prd000-current-state-and-restructure.md`
+for the current baseline.
+
+---
 
 ## Context
 

@@ -1,7 +1,25 @@
 # ADR 002: Migration from OpenSSL to rustls
 
 ## Status
-Proposed - 2025-11-20
+Proposed - 2025-11-20 (partial progress 2026-04-24)
+
+Progress update (2026-04-24, after `simplify/drop-ui-and-single-user`):
+
+- The direct `openssl` optional dependency and the `vendored` feature
+  were removed from `s3-cas/Cargo.toml` when the HTTP UI was deleted.
+- `openssl` / `native-tls` still reach the tree transitively via
+  `rusoto_core` (used for the `ByteStream` type in the write path) and
+  via `hyper-tls` pulled in by `aws-sdk-s3` dev-deps. `cargo tree`
+  shows both `rustls` and `native-tls` present today.
+- The remaining work is to either (a) switch `rusoto_core` to its
+  `rustls` feature or (b) drop the `rusoto_core` dependency entirely
+  by replacing `ByteStream` with a local stream abstraction (tracked
+  as PRD-003). Option (b) is preferred; this ADR becomes redundant if
+  PRD-003 lands first.
+
+Keep this ADR active until one of the two paths is taken.
+
+---
 
 ## Context
 
