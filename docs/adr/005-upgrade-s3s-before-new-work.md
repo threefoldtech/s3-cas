@@ -202,9 +202,14 @@ to emit native `async fn` instead of the `#[async_trait]` attribute,
 maintain the fork in the workspace until upstream catches up.
 Concretely:
 
-- Fork target: `threefoldtech/s3s` (or equivalent), pinned as a git
-  dependency from `s3-cas/Cargo.toml` in place of the current
-  `tag = "v0.11.1"` pin.
+- Fork location: `github.com:delandtj/s3s` (created 2026-04-25,
+  default branch `main`, empty of local patches as of this ADR).
+  The patch work will land on a named branch (e.g. `afit`) so main
+  can track upstream.
+- Pin shape: `s3-cas/Cargo.toml` replaces the current
+  `git = "https://github.com/Nugine/s3s", tag = "v0.11.1"` with a
+  `git = "https://github.com/delandtj/s3s", branch = "afit"` (or a
+  pinned rev once the patch stabilises).
 - Scope of the local patch: template change only. No AWS-model
   regeneration, no behavioural change. The diff is mechanical.
 - Rebase cadence: follow upstream tagged releases, not `main`.
@@ -240,6 +245,6 @@ eliminate one of the two macro-using wrappers entirely.
 ### Open loop
 
 - **Upstream PR.** Hand-written by Jan; not auto-generated from this
-  ADR. Track its number here once filed.
-- **Fork location.** Pick the org (likely `threefoldtech`) and open
-  the repo before the Cargo.toml pin switches over.
+  ADR. Track its number here once filed on `Nugine/s3s`.
+- **Fork branch name.** `afit` proposed; create the branch and land
+  the codegen template patch, then switch `s3-cas/Cargo.toml` over.
