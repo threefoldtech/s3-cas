@@ -14,12 +14,12 @@ One line per document, with status. Use this as the map. Last updated
 | ------- | -------------------------------------------------------------- | -------- |
 | PRD-000 | Current-state baseline and restructure                         | anchor   |
 | PRD-001 | cas-storage internal restructure (split fs.rs, unify CasFS)    | proposed |
+| PRD-006 | s3s upgrade, Rust edition bump, TLS stack consolidation        | draft    |
 
 Candidates named in PRD-000 section 8 but not yet written:
 
 - PRD-003 remove `rusoto_core::ByteStream` from the library surface
 - PRD-005 per-user metrics and quotas
-- PRD-006 edition bump, pin s3s, finish rustls migration
 - PRD-008 expand integration tests and bring benches into CI
 
 (PRD-002, PRD-004, PRD-007 were collapsed into the simplify pass and
