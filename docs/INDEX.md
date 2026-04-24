@@ -41,7 +41,7 @@ number when written):
 | ADR-004 | Drop `async_trait` where we own the trait                   | proposed                                            |
 | ADR-005 | Upgrade `s3s` off `async_trait` before new S3-adjacent work | accepted 2026-04-25; blockade lifted by second-look addendum (same day) - **no longer blocks** |
 | ADR-006 | Presigned URLs via s3s SigV4; optional CLI helper           | accepted 2026-04-25; Deliverable B shipped          |
-| ADR-007 | HTTP exposure options for buckets (option analysis)         | proposed - option analysis, not a commitment        |
+| ADR-007 | HTTP exposure options for buckets (option analysis)         | proposed 2026-04-24, refined 2026-04-25 - still option analysis, now with gap-closure decisions |
 
 ## Architecture notes
 
