@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use http_body_util::Full;
@@ -9,10 +9,11 @@ use prometheus::Encoder;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use cas_storage::{CasFS, StorageEngine};
+use cas_storage::{Durability, SharedBlockStore, StorageEngine};
+use s3_cas::auth::{UserRecord, UserRouter, UserStore};
 use s3_cas::check::{check_integrity, CheckConfig};
-use cas_storage::Durability;
 use s3_cas::retrieve::{retrieve, RetrieveConfig};
+use s3_cas::s3_wrapper::{DynamicS3Auth, S3UserRouter};
 
 #[derive(Parser)]
 #[command(version)]
@@ -41,35 +42,8 @@ pub struct ServerConfig {
     #[arg(long, default_value = "9100")]
     metric_port: u16,
 
-    #[arg(long, help = "Enable HTTP browser interface")]
-    enable_http_ui: bool,
-
-    #[arg(long, default_value = "localhost")]
-    http_ui_host: String,
-
-    #[arg(long, default_value = "8080")]
-    http_ui_port: u16,
-
-    #[arg(
-        long,
-        help = "HTTP UI username (enables basic auth if set with --http-ui-password)"
-    )]
-    http_ui_username: Option<String>,
-
-    #[arg(
-        long,
-        help = "HTTP UI password (enables basic auth if set with --http-ui-username)"
-    )]
-    http_ui_password: Option<String>,
-
     #[arg(long, help = "leave empty to disable it")]
     inline_metadata_size: Option<usize>,
-
-    #[arg(long, display_order = 1000, help = "S3 access key (required in single-user mode)")]
-    access_key: Option<String>,
-
-    #[arg(long, display_order = 1000, help = "S3 secret key (required in single-user mode)")]
-    secret_key: Option<String>,
 
     #[arg(
         long,
@@ -107,9 +81,6 @@ pub enum Command {
         )]
         metadata_db: StorageEngine,
 
-        #[arg(long, help = "Path to users config file for multi-user mode")]
-        users_config: Option<PathBuf>,
-
         #[command(subcommand)]
         command: InspectCommand,
     },
@@ -119,6 +90,22 @@ pub enum Command {
 
     /// Check object integrity
     Check(CheckConfig),
+
+    /// Manage users (add, list, delete, reset-password)
+    User {
+        #[arg(long, default_value = ".")]
+        meta_root: PathBuf,
+
+        #[arg(
+            long,
+            default_value = "fjall",
+            help = "Metadata DB  (fjall, fjall_notx)"
+        )]
+        metadata_db: StorageEngine,
+
+        #[command(subcommand)]
+        command: UserCommand,
+    },
 
     /// Start S3-cas server
     Server(ServerConfig),
@@ -130,7 +117,7 @@ pub enum InspectCommand {
     NumKeys,
     /// Total disk space used by database
     DiskSpace,
-    /// List all users (multi-user mode only)
+    /// List all users
     ListUsers,
     /// Show per-user storage statistics
     UserStats {
@@ -139,7 +126,7 @@ pub enum InspectCommand {
     },
     /// List all buckets
     ListBuckets {
-        /// Filter by user ID (multi-user mode)
+        /// Filter by user ID
         #[arg(long)]
         user: Option<String>,
     },
@@ -147,9 +134,9 @@ pub enum InspectCommand {
     BucketStats {
         /// Bucket name
         bucket: String,
-        /// User ID (required in multi-user mode)
+        /// User ID (required)
         #[arg(long)]
-        user: Option<String>,
+        user: String,
     },
     /// Show block storage statistics and deduplication ratio
     BlockStats,
@@ -159,14 +146,47 @@ pub enum InspectCommand {
         bucket: String,
         /// Object key
         key: String,
-        /// User ID (required in multi-user mode)
+        /// User ID (required)
         #[arg(long)]
-        user: Option<String>,
+        user: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UserCommand {
+    /// Add a new user. Auto-generates credentials if not provided.
+    Add {
+        /// User id (also used as UI login by default)
+        user_id: String,
+        /// UI login (defaults to user_id)
+        #[arg(long)]
+        ui_login: Option<String>,
+        /// UI password (auto-generated if not provided)
+        #[arg(long)]
+        password: Option<String>,
+        /// S3 access key (auto-generated if not provided)
+        #[arg(long)]
+        access_key: Option<String>,
+        /// S3 secret key (auto-generated if not provided)
+        #[arg(long)]
+        secret_key: Option<String>,
+        /// Mark the user as admin
+        #[arg(long)]
+        admin: bool,
+    },
+    /// List all users
+    List,
+    /// Delete a user (removes indices; does not touch object data on disk)
+    Delete { user_id: String },
+    /// Reset a user's UI password. Auto-generates one if not provided.
+    ResetPassword {
+        user_id: String,
+        #[arg(long)]
+        password: Option<String>,
     },
 }
 
 fn setup_tracing(log_level: &str) {
-    // Try to use RUST_LOG env var first, fall back to CLI flag
     let filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(log_level))
         .unwrap_or_else(|_| {
@@ -181,12 +201,10 @@ fn setup_tracing(log_level: &str) {
 }
 
 fn main() -> Result<()> {
-    // console_subscriber::init();
     dotenv::dotenv().ok();
 
     let cli = Cli::parse();
 
-    // Extract log level from Server command, or use default for other commands
     let log_level = match &cli.command {
         Command::Server(config) => config.log_level.as_str(),
         _ => "info",
@@ -199,40 +217,44 @@ fn main() -> Result<()> {
             command,
             meta_root,
             metadata_db,
-            users_config,
         } => {
             use s3_cas::inspect::*;
             match command {
                 InspectCommand::NumKeys => {
-                    let num_keys = num_keys(meta_root, metadata_db, users_config)?;
+                    let num_keys = num_keys(meta_root, metadata_db)?;
                     println!("Number of keys: {num_keys}");
                 }
                 InspectCommand::DiskSpace => {
-                    let disk_space = disk_space(meta_root, metadata_db, users_config);
+                    let disk_space = disk_space(meta_root, metadata_db);
                     println!("Disk space: {disk_space}");
                 }
                 InspectCommand::ListUsers => {
-                    list_users(meta_root, metadata_db, users_config)?;
+                    list_users(meta_root, metadata_db)?;
                 }
                 InspectCommand::UserStats { user_id } => {
-                    user_stats(meta_root, metadata_db, users_config, user_id)?;
+                    user_stats(meta_root, metadata_db, user_id)?;
                 }
                 InspectCommand::ListBuckets { user } => {
-                    list_buckets(meta_root, metadata_db, users_config, user)?;
+                    list_buckets(meta_root, metadata_db, user)?;
                 }
                 InspectCommand::BucketStats { bucket, user } => {
-                    bucket_stats(meta_root, metadata_db, users_config, bucket, user)?;
+                    bucket_stats(meta_root, metadata_db, bucket, user)?;
                 }
                 InspectCommand::BlockStats => {
-                    block_stats(meta_root, metadata_db, users_config)?;
+                    block_stats(meta_root, metadata_db)?;
                 }
                 InspectCommand::ObjectInfo { bucket, key, user } => {
-                    object_info(meta_root, metadata_db, users_config, bucket, key, user)?;
+                    object_info(meta_root, metadata_db, bucket, key, user)?;
                 }
             }
         }
         Command::Retrieve(config) => retrieve(config)?,
         Command::Check(config) => check_integrity(config)?,
+        Command::User {
+            meta_root,
+            metadata_db,
+            command,
+        } => run_user_command(meta_root, metadata_db, command)?,
         Command::Server(config) => {
             run(config)?;
         }
@@ -242,25 +264,141 @@ fn main() -> Result<()> {
 
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
-use s3s::service::S3ServiceBuilder;
+
+fn open_user_store(meta_root: PathBuf, engine: StorageEngine) -> Result<Arc<UserStore>> {
+    let shared = SharedBlockStore::new(meta_root.join("blocks"), engine, None, None)?;
+    let store = shared.meta_store().get_underlying_store();
+    Ok(Arc::new(UserStore::new(store)))
+}
+
+fn generate_random_string(length: usize, charset: &[u8]) -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..length)
+        .map(|_| charset[rng.gen_range(0..charset.len())] as char)
+        .collect()
+}
+
+fn generate_access_key() -> String {
+    generate_random_string(20, b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+}
+
+fn generate_secret_key() -> String {
+    generate_random_string(
+        40,
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/+",
+    )
+}
+
+fn generate_password() -> String {
+    generate_random_string(
+        16,
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+    )
+}
+
+fn run_user_command(
+    meta_root: PathBuf,
+    engine: StorageEngine,
+    cmd: UserCommand,
+) -> Result<()> {
+    let user_store = open_user_store(meta_root, engine)?;
+
+    match cmd {
+        UserCommand::Add {
+            user_id,
+            ui_login,
+            password,
+            access_key,
+            secret_key,
+            admin,
+        } => {
+            let ui_login = ui_login.unwrap_or_else(|| user_id.clone());
+            let password = password.unwrap_or_else(generate_password);
+            let access_key = access_key.unwrap_or_else(generate_access_key);
+            let secret_key = secret_key.unwrap_or_else(generate_secret_key);
+
+            let record = UserRecord::new(
+                user_id.clone(),
+                ui_login,
+                &password,
+                access_key.clone(),
+                secret_key.clone(),
+                admin,
+            )
+            .map_err(|e| anyhow::anyhow!("failed to hash password: {}", e))?;
+
+            user_store
+                .create_user(record)
+                .map_err(|e| anyhow::anyhow!("failed to create user: {}", e))?;
+
+            println!("User '{}' created (admin={})", user_id, admin);
+            println!("  access_key: {}", access_key);
+            println!("  secret_key: {}", secret_key);
+            println!("  ui_password: {}", password);
+            println!("Save these credentials -- they will not be shown again.");
+        }
+        UserCommand::List => {
+            let users = user_store
+                .list_users()
+                .map_err(|e| anyhow::anyhow!("failed to list users: {}", e))?;
+            if users.is_empty() {
+                println!("No users.");
+                return Ok(());
+            }
+            println!(
+                "{:<20} {:<20} {:<24} {:<6}",
+                "USER_ID", "UI_LOGIN", "ACCESS_KEY", "ADMIN"
+            );
+            for u in users {
+                println!(
+                    "{:<20} {:<20} {:<24} {:<6}",
+                    u.user_id,
+                    u.ui_login,
+                    u.s3_access_key,
+                    if u.is_admin { "yes" } else { "no" }
+                );
+            }
+        }
+        UserCommand::Delete { user_id } => {
+            user_store
+                .delete_user(&user_id)
+                .map_err(|e| anyhow::anyhow!("failed to delete user: {}", e))?;
+            println!("User '{}' deleted.", user_id);
+            println!(
+                "Note: per-user object metadata under meta_root/user_{} is not removed by this command.",
+                user_id
+            );
+        }
+        UserCommand::ResetPassword { user_id, password } => {
+            let password = password.unwrap_or_else(generate_password);
+            user_store
+                .update_password(&user_id, &password)
+                .map_err(|e| anyhow::anyhow!("failed to update password: {}", e))?;
+            println!("Password reset for user '{}'.", user_id);
+            println!("  new ui_password: {}", password);
+        }
+    }
+
+    Ok(())
+}
 
 #[tokio::main]
-async fn run(mut args: ServerConfig) -> anyhow::Result<()> {
-    // Canonicalize paths to avoid repeated getcwd() syscalls in async operations
-    // This is critical for performance when using relative paths
-    args.fs_root = args.fs_root.canonicalize()
-        .unwrap_or_else(|_| {
-            std::fs::create_dir_all(&args.fs_root).ok();
-            args.fs_root.canonicalize()
-                .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&args.fs_root))
-        });
+async fn run(mut args: ServerConfig) -> Result<()> {
+    // Canonicalize paths to avoid repeated getcwd() syscalls in async operations.
+    args.fs_root = args.fs_root.canonicalize().unwrap_or_else(|_| {
+        std::fs::create_dir_all(&args.fs_root).ok();
+        args.fs_root
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&args.fs_root))
+    });
 
-    args.meta_root = args.meta_root.canonicalize()
-        .unwrap_or_else(|_| {
-            std::fs::create_dir_all(&args.meta_root).ok();
-            args.meta_root.canonicalize()
-                .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&args.meta_root))
-        });
+    args.meta_root = args.meta_root.canonicalize().unwrap_or_else(|_| {
+        std::fs::create_dir_all(&args.meta_root).ok();
+        args.meta_root
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::current_dir().unwrap().join(&args.meta_root))
+    });
 
     info!("Using fs_root: {}", args.fs_root.display());
     info!("Using meta_root: {}", args.meta_root.display());
@@ -268,100 +406,7 @@ async fn run(mut args: ServerConfig) -> anyhow::Result<()> {
     let storage_engine = args.metadata_db;
     let metrics = s3_cas::metrics::SharedMetrics::new();
 
-    // Check if single-user mode is explicitly requested
-    if args.access_key.is_some() && args.secret_key.is_some() {
-        info!("Single-user mode (explicit credentials provided)");
-        run_single_user(args, storage_engine, metrics).await
-    } else if args.access_key.is_some() || args.secret_key.is_some() {
-        anyhow::bail!(
-            "Single-user mode requires both --access-key and --secret-key.\n\
-             Omit both for multi-user mode with database-backed authentication."
-        );
-    } else {
-        info!("Multi-user mode (database-backed authentication)");
-        run_multi_user(args, storage_engine, metrics).await
-    }
-}
-
-async fn run_single_user(
-    args: ServerConfig,
-    storage_engine: cas_storage::StorageEngine,
-    metrics: s3_cas::metrics::SharedMetrics,
-) -> anyhow::Result<()> {
-    // Original single-user implementation
-    let casfs = CasFS::new(
-        args.fs_root.clone(),
-        args.meta_root.clone(),
-        metrics.to_cas_metrics(),
-        storage_engine,
-        args.inline_metadata_size,
-        Some(args.durability),
-    );
-    let s3fs = s3_cas::s3fs::S3FS::new(Arc::new(casfs), metrics.clone());
-    let s3fs = s3_cas::metrics::MetricFs::new(s3fs, metrics.clone());
-
-    // HTTP UI service (if enabled)
-    let http_ui_service = if args.enable_http_ui {
-        let http_casfs = CasFS::new(
-            args.fs_root.clone(),
-            args.meta_root.clone(),
-            metrics.to_cas_metrics(),
-            storage_engine,
-            args.inline_metadata_size,
-            Some(args.durability),
-        );
-
-        let http_ui_username = args.http_ui_username.clone();
-        let http_ui_password = args.http_ui_password.clone();
-        let auth = match (http_ui_username, http_ui_password) {
-            (Some(username), Some(password)) => {
-                info!("HTTP UI basic auth enabled for user: {}", username);
-                Some(s3_cas::http_ui::BasicAuth::new(username, password))
-            }
-            _ => None,
-        };
-
-        Some(s3_cas::http_ui::HttpUiServiceWrapper::SingleUser(
-            s3_cas::http_ui::HttpUiService::new(
-                http_casfs,
-                metrics.clone(),
-                auth,
-            )
-        ))
-    } else {
-        None
-    };
-
-    // Setup S3 service
-    let service = {
-        let mut b = S3ServiceBuilder::new(s3fs);
-
-        // Enable authentication
-        let access_key = args.access_key.clone();
-        let secret_key = args.secret_key.clone();
-        if let (Some(ak), Some(sk)) = (access_key, secret_key) {
-            b.set_auth(s3s::auth::SimpleAuth::from_single(ak, sk));
-            info!("authentication is enabled");
-        }
-
-        b.build()
-    };
-
-    run_server(args, service, http_ui_service, metrics).await
-}
-
-async fn run_multi_user(
-    args: ServerConfig,
-    storage_engine: cas_storage::StorageEngine,
-    metrics: s3_cas::metrics::SharedMetrics,
-) -> anyhow::Result<()> {
-    use s3_cas::auth::UserRouter;
-    use cas_storage::SharedBlockStore;
-    use s3_cas::s3_wrapper::DynamicS3Auth;
-
-    info!("Starting multi-user mode with dynamic authentication");
-
-    // Create shared block store (singleton for all users)
+    // Shared block store (singleton for all users).
     let shared_block_store = Arc::new(SharedBlockStore::new(
         args.meta_root.join("blocks"),
         storage_engine,
@@ -369,15 +414,22 @@ async fn run_multi_user(
         Some(args.durability),
     )?);
 
-    // Create UserStore using the same storage backend as SharedBlockStore
-    let user_store = Arc::new(s3_cas::auth::UserStore::new(
-        shared_block_store.meta_store().get_underlying_store()
+    let user_store = Arc::new(UserStore::new(
+        shared_block_store.meta_store().get_underlying_store(),
     ));
 
-    // Create SessionStore for HTTP UI authentication
-    let session_store = Arc::new(s3_cas::auth::SessionStore::new());
+    let user_count = user_store
+        .count_users()
+        .map_err(|e| anyhow::anyhow!("failed to count users: {}", e))?;
+    if user_count == 0 {
+        bail!(
+            "No users in database. Create one first:\n  \
+             s3-cas user --meta-root {} add <user_id> --admin",
+            args.meta_root.display()
+        );
+    }
+    info!("Found {} user(s) in database", user_count);
 
-    // Create user router with lazy CasFS initialization
     let user_router = Arc::new(UserRouter::new(
         shared_block_store.clone(),
         args.fs_root.clone(),
@@ -388,104 +440,29 @@ async fn run_multi_user(
         Some(args.durability),
     ));
 
-    let user_count = user_store.count_users()?;
-    if user_count == 0 {
-        info!("No users found in database. First user will be created through HTTP UI setup.");
-    } else {
-        info!("Found {} user(s) in database", user_count);
-    }
-
-    // Create S3UserRouter for per-request routing
-    info!("Setting up S3UserRouter with dynamic authentication");
-    let s3_user_router = s3_cas::s3_wrapper::S3UserRouter::new(
-        user_router.clone(),
-        user_store.clone(),
-    );
+    let s3_user_router = S3UserRouter::new(user_router.clone(), user_store.clone());
     let s3_service = s3_cas::metrics::MetricFs::new(s3_user_router, metrics.clone());
 
-    // HTTP UI service (if enabled) - multi-user with session-based auth
-    let http_ui_service = if args.enable_http_ui {
-        info!("HTTP UI enabled with session-based authentication");
-        Some(s3_cas::http_ui::HttpUiServiceWrapper::MultiUser(
-            s3_cas::http_ui::HttpUiServiceMultiUser::new(
-                user_router.clone(),
-                user_store.clone(),
-                session_store.clone(),
-                metrics.clone(),
-            )
-        ))
-    } else {
-        None
-    };
-
-    // Setup S3 service with dynamic authentication
     let service = {
         let auth = DynamicS3Auth::new(user_store.clone());
         let mut b = s3s::service::S3ServiceBuilder::new(s3_service);
         b.set_auth(auth);
-        info!("Multi-user S3 service enabled with dynamic authentication");
         b.build()
     };
 
-    // Spawn background task for session cleanup and metrics
-    {
-        let session_store_clone = session_store.clone();
-        let metrics_clone = metrics.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-
-                // Clean up expired sessions
-                let removed = session_store_clone.cleanup_expired();
-                if removed > 0 {
-                    tracing::debug!(removed = removed, "Cleaned up expired sessions");
-                }
-
-                // Update active session count metric
-                let active_count = session_store_clone.active_session_count();
-                metrics_clone.set_active_sessions(active_count);
-                tracing::trace!(active_sessions = active_count, "Updated session metrics");
-            }
-        });
-        info!("Started background session cleanup and metrics task");
-    }
-
-    run_server(args, service, http_ui_service, metrics).await
+    run_server(args, service).await
 }
 
-async fn run_server(
-    args: ServerConfig,
-    service: s3s::service::S3Service,
-    http_ui_service: Option<s3_cas::http_ui::HttpUiServiceWrapper>,
-    _metrics: s3_cas::metrics::SharedMetrics,
-) -> anyhow::Result<()> {
-
-    // Run server
-    // S3 listener
+async fn run_server(args: ServerConfig, service: s3s::service::S3Service) -> Result<()> {
     let listener = tokio::net::TcpListener::bind((args.host.as_str(), args.port)).await?;
     let local_addr = listener.local_addr()?;
 
     let hyper_service = service.into_shared();
 
-    // metrics server
-    // Add after the main listener setup
     let metrics_listener =
         tokio::net::TcpListener::bind((args.metric_host.as_str(), args.metric_port)).await?;
     let metrics_addr = metrics_listener.local_addr()?;
-
     info!("metrics server is running at http://{metrics_addr}");
-
-    // HTTP UI server (optional)
-    let http_ui_listener = if args.enable_http_ui {
-        let listener =
-            tokio::net::TcpListener::bind((args.http_ui_host.as_str(), args.http_ui_port)).await?;
-        let addr = listener.local_addr()?;
-        info!("HTTP UI server is running at http://{addr}");
-        Some(listener)
-    } else {
-        None
-    };
 
     let metrics_service = hyper::service::service_fn(
         move |req: hyper::Request<hyper::body::Incoming>| async move {
@@ -525,7 +502,7 @@ async fn run_server(
         tokio::select! {
             res = listener.accept() => {
                 match res {
-                    Ok((socket,_)) => {
+                    Ok((socket, _)) => {
                         let conn = http_server.serve_connection(TokioIo::new(socket), hyper_service.clone());
                         let conn = graceful.watch(conn.into_owned());
                         tokio::spawn(async move {
@@ -541,46 +518,17 @@ async fn run_server(
             }
             res = metrics_listener.accept() => {
                 match res {
-                    Ok((socket, _)) =>{
+                    Ok((socket, _)) => {
                         let conn = http_server.serve_connection(TokioIo::new(socket), metrics_service);
                         let conn = graceful.watch(conn.into_owned());
                         tokio::spawn(async move {
                             let _ = conn.await;
                         });
                         continue;
-
-                    }// (socket, metrics_service.clone()),
+                    }
                     Err(err) => {
                         tracing::error!("error accepting metrics connection: {err}");
                         continue;
-                    }
-                }
-            }
-            res = async {
-                match &http_ui_listener {
-                    Some(listener) => listener.accept().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                if let Some(ref service) = http_ui_service {
-                    match res {
-                        Ok((socket, _)) => {
-                            let service_clone = service.clone();
-                            let http_ui_handler = hyper::service::service_fn(move |req| {
-                                let service = service_clone.clone();
-                                async move { service.handle_request(req).await }
-                            });
-                            let conn = http_server.serve_connection(TokioIo::new(socket), http_ui_handler);
-                            let conn = graceful.watch(conn.into_owned());
-                            tokio::spawn(async move {
-                                let _ = conn.await;
-                            });
-                            continue;
-                        }
-                        Err(err) => {
-                            tracing::error!("error accepting HTTP UI connection: {err}");
-                            continue;
-                        }
                     }
                 }
             }
@@ -592,10 +540,10 @@ async fn run_server(
 
     tokio::select! {
         () = graceful.shutdown() => {
-             tracing::debug!("Gracefully shutdown!");
+            tracing::debug!("Gracefully shutdown!");
         },
         () = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
-             tracing::debug!("Waited 10 seconds for graceful shutdown, aborting...");
+            tracing::debug!("Waited 10 seconds for graceful shutdown, aborting...");
         }
     }
 
