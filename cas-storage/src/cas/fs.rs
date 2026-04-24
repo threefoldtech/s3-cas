@@ -2,10 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{io, path::PathBuf};
 
-use super::{
-    buffered_byte_stream::BufferedByteStream,
-    multipart::{MultiPart, MultiPartTree},
-};
+use super::multipart::{MultiPart, MultiPartTree};
 use crate::metrics::SharedMetrics;
 
 use crate::metastore::{
@@ -13,63 +10,16 @@ use crate::metastore::{
     MetaError, MetaStore, MetaTreeExt, Object, ObjectData,
 };
 
-use faster_hex::hex_string;
-use futures::{
-    channel::mpsc::unbounded,
-    sink::SinkExt,
-    stream,
-    stream::{StreamExt, TryStreamExt},
-};
-use md5::{Digest, Md5};
 use rusoto_core::ByteStream;
 
 pub const BLOCK_SIZE: usize = 1 << 20; // Supposedly 1 MiB
-
-struct PendingMarker {
-    metrics: SharedMetrics,
-    in_flight: u64,
-}
-
-impl PendingMarker {
-    pub fn new(metrics: SharedMetrics) -> Self {
-        Self {
-            metrics,
-            in_flight: 0,
-        }
-    }
-
-    pub fn block_pending(&mut self) {
-        self.metrics.block_pending();
-        self.in_flight += 1;
-    }
-
-    pub fn block_write_error(&mut self) {
-        self.metrics.block_write_error();
-        self.in_flight -= 1;
-    }
-
-    pub fn block_ignored(&mut self) {
-        self.metrics.block_ignored();
-    }
-
-    pub fn block_written(&mut self, _size: usize) {
-        self.metrics.block_written();
-        self.in_flight -= 1;
-    }
-}
-
-impl Drop for PendingMarker {
-    fn drop(&mut self) {
-        self.metrics.blocks_dropped(self.in_flight)
-    }
-}
 
 // Synchronous seam for the disk write path. Kept as a trait so the
 // on-disk write can be mocked in tests (see `test_store_object_write_failure`).
 // Was previously `#[async_trait]`; the methods were made sync in c5f9cc9 to
 // fix the Fjall deadlock (see docs/arch/deadlock-fix.md), and the macro was
 // dead decoration ever since. Stripped per ADR-004.
-trait AsyncFileSystem: Send + Sync + std::fmt::Debug {
+pub(super) trait AsyncFileSystem: Send + Sync + std::fmt::Debug {
     fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()>;
     fn write(&self, path: &std::path::Path, contents: &[u8]) -> std::io::Result<()>;
 }
@@ -88,14 +38,14 @@ impl AsyncFileSystem for RealAsyncFs {
 }
 
 pub struct CasFS {
-    async_fs: Box<dyn AsyncFileSystem>,
-    user_meta_store: MetaStore,
-    root: PathBuf,
-    metrics: SharedMetrics,
+    pub(super) async_fs: Box<dyn AsyncFileSystem>,
+    pub(super) user_meta_store: MetaStore,
+    pub(super) root: PathBuf,
+    pub(super) metrics: SharedMetrics,
     multipart_tree: Arc<MultiPartTree>,
     block_tree: Arc<BlockTree>,
     shared_path_tree: Option<Arc<dyn BaseMetaTree>>,
-    shared_meta_store: Option<Arc<MetaStore>>,
+    pub(super) shared_meta_store: Option<Arc<MetaStore>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -231,7 +181,7 @@ impl CasFS {
         }
     }
 
-    fn path_tree(&self) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
+    pub(super) fn path_tree(&self) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
         match &self.shared_path_tree {
             Some(tree) => Ok(Arc::clone(tree)),
             None => self.user_meta_store.get_path_tree(),
@@ -250,7 +200,7 @@ impl CasFS {
         &self,
         bucket_name: &str,
     ) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
-        self.user_meta_store.get_bucket_ext(bucket_name)
+        super::buckets::get_bucket(self, bucket_name)
     }
 
     /// Open the tree containing the block map.
@@ -260,7 +210,7 @@ impl CasFS {
 
     /// Check if a bucket with a given name exists.
     pub fn bucket_exists(&self, bucket_name: &str) -> Result<bool, MetaError> {
-        self.user_meta_store.bucket_exists(bucket_name)
+        super::buckets::bucket_exists(self, bucket_name)
     }
 
     // create a meta object and insert it into the database
@@ -284,7 +234,7 @@ impl CasFS {
         bucket_name: &str,
         key: &str,
     ) -> Result<Option<Object>, MetaError> {
-        self.user_meta_store.get_meta(bucket_name, key)
+        super::read_path::get_object_meta(self, bucket_name, key)
     }
 
     pub fn get_object_paths(
@@ -292,62 +242,18 @@ impl CasFS {
         bucket_name: &str,
         key: &str,
     ) -> Result<Option<ObjectPaths>, MetaError> {
-        let obj_meta = self.get_object_meta(bucket_name, key)?;
-        let Some(obj_meta) = obj_meta else {
-            return Ok(None);
-        };
-
-        if obj_meta.is_inlined() {
-            Ok(Some((obj_meta, vec![])))
-        } else {
-            let blocks = obj_meta.blocks();
-            let block_map = self.block_tree()?;
-            let mut paths = Vec::with_capacity(blocks.len());
-            for block in blocks {
-                let block_meta = block_map
-                    .get_block(block)?
-                    .ok_or(MetaError::BlockNotFound)?;
-                paths.push((
-                    block_meta.disk_path(self.fs_root().clone()),
-                    block_meta.size(),
-                ));
-            }
-            Ok(Some((obj_meta, paths)))
-        }
+        super::read_path::get_object_paths(self, bucket_name, key)
     }
 
     // create and insert a new  bucket
     pub fn create_bucket(&self, bucket_name: &str) -> Result<(), MetaError> {
-        let bm = BucketMeta::new(bucket_name.to_string());
-        self.user_meta_store.insert_bucket(bucket_name, bm.to_vec())
+        super::buckets::create_bucket(self, bucket_name)
     }
 
     /// Remove a bucket and its associated metadata.
     // TODO: this is very much not optimal
-    #[tracing::instrument(skip(self), fields(bucket = %bucket_name, objects_deleted))]
     pub async fn bucket_delete(&self, bucket_name: &str) -> Result<(), MetaError> {
-        // remove from the bucket list tree/partition
-        let bmt = self.user_meta_store.get_allbuckets_tree()?;
-        bmt.remove(bucket_name.as_bytes())?;
-
-        // removes all objects in the bucket
-        let bucket = self.user_meta_store.get_bucket_ext(bucket_name)?;
-        let mut object_count = 0;
-        for key_val in bucket.iter_all() {
-            let (key, _) = key_val?;
-            self.delete_object(
-                bucket_name,
-                std::str::from_utf8(&key).expect("keys are valid utf-8"),
-            )
-            .await?;
-            object_count += 1;
-        }
-
-        tracing::Span::current().record("objects_deleted", object_count);
-
-        // remove the bucket tree/partition itself
-        self.user_meta_store.drop_bucket(bucket_name)?;
-        Ok(())
+        super::delete_path::bucket_delete(self, bucket_name).await
     }
 
     fn part_key(&self, bucket: &str, key: &str, upload_id: &str, part_number: i64) -> String {
@@ -429,46 +335,18 @@ impl CasFS {
     }
 
     pub fn key_exists(&self, bucket: &str, key: &str) -> Result<bool, MetaError> {
-        let bucket = self.get_bucket(bucket)?;
-        bucket.contains_key(key.as_bytes())
+        super::buckets::key_exists(self, bucket, key)
     }
 
     /// Get a list of all buckets in the system.
     pub fn list_buckets(&self) -> Result<Vec<BucketMeta>, MetaError> {
-        self.user_meta_store.list_buckets()
+        super::buckets::list_buckets(self)
     }
 
     /// Delete an object from a bucket.
     /// it also delete keys under it's tree
-    #[tracing::instrument(skip(self), fields(bucket = %bucket, key = %key, blocks_deleted))]
     pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), MetaError> {
-        let path_map = self.path_tree()?;
-
-        // get blocks that safe to delete
-        let blocks_to_delete = self.user_meta_store.delete_object(bucket, key)?;
-
-        tracing::Span::current().record("blocks_deleted", blocks_to_delete.len());
-
-        // Now
-        // - delete all the blocks from disk
-        // - and unlink them in the path map.
-        for block in blocks_to_delete {
-            async_fs::remove_file(block.disk_path(self.root.clone()))
-                .await
-                .expect("Could not delete file");
-            // Now that the path is free it can be removed from the path map
-            if let Err(e) = path_map.remove(block.path()) {
-                // Only print error, we might be able to remove the other ones. If we exist
-                // here, those will be left dangling.
-                tracing::error!(
-                    path = %hex_string(block.path()),
-                    error = %e,
-                    "Could not unlink path from path map"
-                );
-            };
-        }
-
-        Ok(())
+        super::delete_path::delete_object(self, bucket, key).await
     }
 
     // convenient function to store an object to disk and then store it's metada
@@ -479,215 +357,23 @@ impl CasFS {
         data: ByteStream,
         len: usize,
     ) -> io::Result<Object> {
-        let (blocks, content_hash, size) = if len > 0 {
-            self.store_object(bucket_name, key, data).await?
-        } else {
-            tracing::warn!(%key, "Skipping store for empty blob");
-            (Vec::new(), [0; 16], 0)
-        };
-        let obj = self
-            .create_object_meta(
-                bucket_name,
-                key,
-                size,
-                content_hash,
-                ObjectData::SinglePart { blocks },
-            )
-            .unwrap();
-        Ok(obj)
+        super::write_path::store_single_object_and_meta(self, bucket_name, key, data, len).await
     }
 
     /// Save the stream of bytes to disk.
-    ///
-    /// old_obj_meta is an optional Object that is Some if the key already exists in the metadata.
     ///
     /// The data is streamed in chunks, and each chunk is hashed and stored on disk.
     /// The hash of each chunk is used as a key to store the data in the database.
     ///
     /// A list of block ID's used as keys for the data blocks is
     /// returned, along with the hash of the full byte stream, and the length of the stream.
-    #[tracing::instrument(skip(self, data), fields(bucket = %bucket_name, key = %key, size, blocks))]
     pub async fn store_object(
         &self,
         bucket_name: &str,
         key: &str,
         data: ByteStream,
     ) -> io::Result<(Vec<BlockID>, BlockID, u64)> {
-        let old_obj_meta = match self.get_object_meta(bucket_name, key) {
-            Ok(Some(obj_meta)) => Some(obj_meta),
-            _ => None,
-        };
-        let old_obj_meta = Arc::new(old_obj_meta);
-
-        let (tx, rx) = unbounded();
-        let mut content_hash = Md5::new();
-        let data = BufferedByteStream::new(data);
-        let mut size = 0;
-        data.map(|res| match res {
-            Ok(buffers) => buffers.into_iter().map(Ok).collect(),
-            Err(e) => vec![Err(e)],
-        })
-        .map(stream::iter)
-        .flatten()
-        .inspect(|maybe_bytes| {
-            if let Ok(bytes) = maybe_bytes {
-                content_hash.update(bytes);
-                size += bytes.len() as u64;
-                self.metrics.bytes_received(bytes.len());
-            }
-        })
-        .zip(stream::repeat((tx, old_obj_meta)))
-        .enumerate()
-        .for_each(
-            // 1,
-            |(idx, (maybe_chunk, (mut tx, old_obj_meta)))| async move {
-                if let Err(e) = maybe_chunk {
-                    if let Err(e) = tx
-                        .send(Err(std::io::Error::new(e.kind(), e.to_string())))
-                        .await
-                    {
-                        tracing::error!(error = %e, "Could not convey result");
-                    }
-                    return;
-                }
-                // unwrap is safe as we checked that there is no error above
-                let bytes: Vec<u8> = maybe_chunk.unwrap();
-                let mut hasher = Md5::new();
-                hasher.update(&bytes);
-                let block_hash: BlockID = hasher.finalize().into();
-                let data_len = bytes.len();
-
-                // check if this key already has this block
-                let key_has_block = if let Some(obj) = old_obj_meta.as_ref() {
-                    obj.has_block(&block_hash)
-                } else {
-                    false
-                };
-
-                // begin the transaction
-                // there are two main things we need to do here:
-                // 1. write the meta to the database
-                //      - if the block already exists, we don't need to write it to the storage
-                //      - if the block does not exist, we need to write it to the storage
-                // 2. write the actual block to disk
-                //
-                // we commit the meta database transaction BEFORE writing the block to disk
-                // to avoid holding the lock during slow I/O operations.
-                //
-                // IMPORTANT: In multi-user mode, use shared MetaStore for block transactions
-                // to ensure blocks are written to the shared _BLOCKS tree, not user-specific tree
-                let mut store_tx = match &self.shared_meta_store {
-                    Some(shared_store) => shared_store.begin_transaction(),
-                    None => self.user_meta_store.begin_transaction(),
-                };
-                let write_meta_result = store_tx.write_block(block_hash, data_len, key_has_block);
-
-                let mut pm = PendingMarker::new(self.metrics.clone());
-
-                let block = match write_meta_result {
-                    Err(e) => {
-                        if let Err(e) = tx.unbounded_send(Err(e.into())) {
-                            tracing::error!(error = %e, "Could not send transaction error");
-                        }
-                        return;
-                    }
-                    Ok((false, _)) => {
-                        // the block already exists, no need to write it to the storage
-                        pm.block_ignored();
-
-                        tracing::debug!(target: "cas_storage::locks", "Committing metadata transaction (block exists)");
-                        Box::new(store_tx).commit().unwrap();
-
-                        if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
-                            tracing::error!(error = %e, "Could not send block id");
-                        }
-                        return;
-                    }
-                    Ok((true, block)) => {
-                        // the block does not exist, we need to write it to the storage
-                        pm.block_pending();
-                        
-                        // COMMIT IMMEDIATELY to release lock
-                        tracing::debug!(target: "cas_storage::locks", "Committing metadata transaction (new block)");
-                        Box::new(store_tx).commit().unwrap();
-                        
-                        block
-                    }
-                };
-
-                // write the actual block to disk
-                // if the disk operation fails, we must manually rollback (compensating transaction)
-                let block_path = block.disk_path(self.root.clone());
-                
-                // Helper to cleanup on failure
-                let cleanup_on_failure = || {
-                    // We need to delete the block we just added.
-                    // Since we just added it with rc=1, we can just delete it.
-                    // We accept potential data leakage here if this cleanup fails,
-                    // as per the design principles (leakage is better than data loss).
-                    
-                    // We need to access the block tree to remove the block.
-                    // In multi-user mode, this is in the shared store.
-                    let block_tree = match &self.shared_meta_store {
-                        Some(shared_store) => shared_store.get_block_tree(),
-                        None => self.user_meta_store.get_block_tree(),
-                    };
-                    
-                    if let Ok(tree) = block_tree {
-                        // We can try to remove it directly from the tree.
-                        // This bypasses the transaction for deletion, but since we know 
-                        // we are the only ones who just added it (rc=1), and we are failing, 
-                        // it should be safe to remove.
-                         if let Err(e) = tree.remove(&block_hash) {
-                             tracing::warn!(block = %hex_string(&block_hash), error = %e, "Failed to cleanup orphan block metadata");
-                         } else {
-                             tracing::debug!(block = %hex_string(&block_hash), "Cleaned up orphan block metadata");
-                         }
-                    }
-                };
-
-                if let Err(e) = self.async_fs.create_dir_all(block_path.parent().unwrap()) {
-                    cleanup_on_failure();
-
-                    if let Err(e) = tx.unbounded_send(Err(e)) {
-                        pm.block_write_error();
-                        tracing::error!(error = %e, "Could not send path create error");
-                        return;
-                    }
-                }
-                if let Err(e) = self.async_fs.write(&block_path, &bytes) {
-                    cleanup_on_failure();
-
-                    if let Err(e) = tx.unbounded_send(Err(e)) {
-                        pm.block_write_error();
-                        tracing::error!(error = %e, "Could not send block write error");
-                        return;
-                    }
-                }
-
-                pm.block_written(bytes.len());
-
-                if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
-                    tracing::error!(error = %e, "Could not send block id");
-                }
-            },
-        )
-        .await;
-
-        let mut ids = rx.try_collect::<Vec<(usize, BlockID)>>().await?;
-        // Make sure the chunks are in the proper order
-        ids.sort_by_key(|a| a.0);
-
-        let blocks: Vec<BlockID> = ids.into_iter().map(|(_, id)| id).collect();
-
-        tracing::Span::current().record("size", size);
-        tracing::Span::current().record("blocks", blocks.len());
-
-        Ok((
-            blocks,
-            content_hash.finalize().into(),
-            size,
-        ))
+        super::write_path::store_object(self, bucket_name, key, data).await
     }
 
     // Store an object inlined in the metadata.
@@ -697,16 +383,7 @@ impl CasFS {
         key: &str,
         data: Vec<u8>,
     ) -> Result<Object, MetaError> {
-        let content_hash = Md5::digest(&data).into();
-        let size = data.len() as u64;
-        let obj = self.create_object_meta(
-            bucket_name,
-            key,
-            size,
-            content_hash,
-            ObjectData::Inline { data },
-        )?;
-        Ok(obj)
+        super::write_path::store_inlined_object(self, bucket_name, key, data)
     }
 }
 
