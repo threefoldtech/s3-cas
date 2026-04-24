@@ -154,16 +154,10 @@ pub enum InspectCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum UserCommand {
-    /// Add a new user. Auto-generates credentials if not provided.
+    /// Add a new user. Auto-generates S3 credentials if not provided.
     Add {
-        /// User id (also used as UI login by default)
+        /// User id
         user_id: String,
-        /// UI login (defaults to user_id)
-        #[arg(long)]
-        ui_login: Option<String>,
-        /// UI password (auto-generated if not provided)
-        #[arg(long)]
-        password: Option<String>,
         /// S3 access key (auto-generated if not provided)
         #[arg(long)]
         access_key: Option<String>,
@@ -178,12 +172,6 @@ pub enum UserCommand {
     List,
     /// Delete a user (removes indices; does not touch object data on disk)
     Delete { user_id: String },
-    /// Reset a user's UI password. Auto-generates one if not provided.
-    ResetPassword {
-        user_id: String,
-        #[arg(long)]
-        password: Option<String>,
-    },
 }
 
 fn setup_tracing(log_level: &str) {
@@ -290,13 +278,6 @@ fn generate_secret_key() -> String {
     )
 }
 
-fn generate_password() -> String {
-    generate_random_string(
-        16,
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
-    )
-}
-
 fn run_user_command(
     meta_root: PathBuf,
     engine: StorageEngine,
@@ -307,26 +288,20 @@ fn run_user_command(
     match cmd {
         UserCommand::Add {
             user_id,
-            ui_login,
-            password,
             access_key,
             secret_key,
             admin,
         } => {
-            let ui_login = ui_login.unwrap_or_else(|| user_id.clone());
-            let password = password.unwrap_or_else(generate_password);
             let access_key = access_key.unwrap_or_else(generate_access_key);
             let secret_key = secret_key.unwrap_or_else(generate_secret_key);
 
             let record = UserRecord::new(
                 user_id.clone(),
-                ui_login,
-                &password,
                 access_key.clone(),
                 secret_key.clone(),
                 admin,
             )
-            .map_err(|e| anyhow::anyhow!("failed to hash password: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to build user record: {}", e))?;
 
             user_store
                 .create_user(record)
@@ -335,7 +310,6 @@ fn run_user_command(
             println!("User '{}' created (admin={})", user_id, admin);
             println!("  access_key: {}", access_key);
             println!("  secret_key: {}", secret_key);
-            println!("  ui_password: {}", password);
             println!("Save these credentials -- they will not be shown again.");
         }
         UserCommand::List => {
@@ -346,15 +320,11 @@ fn run_user_command(
                 println!("No users.");
                 return Ok(());
             }
-            println!(
-                "{:<20} {:<20} {:<24} {:<6}",
-                "USER_ID", "UI_LOGIN", "ACCESS_KEY", "ADMIN"
-            );
+            println!("{:<20} {:<24} {:<6}", "USER_ID", "ACCESS_KEY", "ADMIN");
             for u in users {
                 println!(
-                    "{:<20} {:<20} {:<24} {:<6}",
+                    "{:<20} {:<24} {:<6}",
                     u.user_id,
-                    u.ui_login,
                     u.s3_access_key,
                     if u.is_admin { "yes" } else { "no" }
                 );
@@ -369,14 +339,6 @@ fn run_user_command(
                 "Note: per-user object metadata under meta_root/user_{} is not removed by this command.",
                 user_id
             );
-        }
-        UserCommand::ResetPassword { user_id, password } => {
-            let password = password.unwrap_or_else(generate_password);
-            user_store
-                .update_password(&user_id, &password)
-                .map_err(|e| anyhow::anyhow!("failed to update password: {}", e))?;
-            println!("Password reset for user '{}'.", user_id);
-            println!("  new ui_password: {}", password);
         }
     }
 

@@ -85,17 +85,16 @@ pub fn list_users(meta_root: PathBuf, engine: StorageEngine) -> Result<()> {
     }
 
     println!(
-        "{:<20} {:<20} {:<30} {:<10} {:<20}",
-        "User ID", "UI Login", "S3 Access Key", "Admin", "Created At"
+        "{:<20} {:<30} {:<10} {:<20}",
+        "User ID", "S3 Access Key", "Admin", "Created At"
     );
     println!("{:-<100}", "");
     for user in users {
         let created_at = UNIX_EPOCH + std::time::Duration::from_secs(user.created_at);
         let datetime = chrono::DateTime::<chrono::Utc>::from(created_at);
         println!(
-            "{:<20} {:<20} {:<30} {:<10} {:<20}",
+            "{:<20} {:<30} {:<10} {:<20}",
             user.user_id,
-            user.ui_login,
             user.s3_access_key,
             if user.is_admin { "Yes" } else { "No" },
             datetime.format("%Y-%m-%d %H:%M:%S"),
