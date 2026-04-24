@@ -274,8 +274,8 @@ impl MetaTreeExt for FjallTreeNotx {
 
         let filtered = base_iter.filter_map(|res| res.ok());
 
-        let skip_filtered = if prefix.is_some() && ctsa.is_some() {
-            let ctsa_bytes = ctsa.unwrap().into_bytes();
+        let skip_filtered = if let (Some(_), Some(ctsa)) = (&prefix, ctsa) {
+            let ctsa_bytes = ctsa.into_bytes();
             Box::new(
                 filtered.skip_while(move |(raw_key, _)| raw_key.deref() <= ctsa_bytes.as_slice()),
             ) as Box<dyn Iterator<Item = _>>

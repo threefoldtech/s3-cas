@@ -137,7 +137,7 @@ pub fn user_stats(
         let mut total_objects = 0usize;
         let mut total_size = 0u64;
         for b in buckets {
-            let tree = match meta.get_bucket_ext(&b.name()) {
+            let tree = match meta.get_bucket_ext(b.name()) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
@@ -179,7 +179,7 @@ pub fn list_buckets(
         let meta = create_meta_store(path, engine);
         let buckets = meta.list_buckets().unwrap_or_default();
         for b in buckets {
-            let tree = meta.get_bucket_ext(&b.name()).ok();
+            let tree = meta.get_bucket_ext(b.name()).ok();
             let count = tree.map(|t| t.range_filter(None, None, None).count()).unwrap_or(0);
             let dt = chrono::DateTime::<chrono::Utc>::from(b.ctime());
             println!(

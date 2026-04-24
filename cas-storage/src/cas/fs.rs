@@ -135,6 +135,9 @@ impl CasFS {
     /// * `storage_engine` - Storage engine for user metadata
     /// * `inlined_metadata_size` - Maximum size for inlined metadata
     /// * `durability` - Durability level for user metadata transactions
+    // Scheduled for removal by PRD-001 sect. 5 (one-shape CasFS collapse);
+    // at that point the second constructor and its argument count go away.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_multi_user(
         mut root: PathBuf,
         mut user_meta_path: PathBuf,
@@ -398,7 +401,7 @@ mod tests {
 
     const TEST_ENGINES: [StorageEngine; 2] = [StorageEngine::Fjall, StorageEngine::FjallNotx];
 
-    static METRICS: Lazy<SharedMetrics> = Lazy::new(|| SharedMetrics::default());
+    static METRICS: Lazy<SharedMetrics> = Lazy::new(SharedMetrics::default);
 
     fn setup_test_fs(storage_engine: StorageEngine) -> (CasFS, tempfile::TempDir) {
         let dir = tempdir().unwrap();
@@ -436,8 +439,7 @@ mod tests {
 
         fn write(&self, _path: &std::path::Path, _contents: &[u8]) -> std::io::Result<()> {
             if !self.should_fail_write {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Err(std::io::Error::other(
                     "Mock write failure",
                 ))
             } else {
@@ -536,12 +538,11 @@ mod tests {
         let stored_block = block_tree.get_block(&obj.blocks()[0]).unwrap().unwrap();
         assert_eq!(stored_block.size(), test_data_len);
         assert_eq!(stored_block.rc(), 1);
-        assert_eq!(
+        assert!(
             fs.path_tree()
                 .unwrap()
                 .contains_key(stored_block.path())
-                .unwrap(),
-            true
+                .unwrap()
         );
 
         // Store the same data again with different key
@@ -692,16 +693,15 @@ mod tests {
 
         // Verify object exists
         let exists = fs.key_exists(bucket_name, key).unwrap();
-        assert_eq!(exists, true);
+        assert!(exists);
 
         // verify blocks and path exist
         let block_tree = fs.user_meta_store.get_block_tree().unwrap();
         let mut stored_paths = Vec::new();
         for id in obj.blocks() {
             let block = block_tree.get_block(id).unwrap().unwrap();
-            assert_eq!(
-                fs.path_tree().unwrap().contains_key(block.path()).unwrap(),
-                true
+            assert!(
+                fs.path_tree().unwrap().contains_key(block.path()).unwrap()
             );
             stored_paths.push(block.path().to_vec());
         }
@@ -711,7 +711,7 @@ mod tests {
 
         // Verify object no longer exists
         let exists = fs.key_exists(bucket_name, key).unwrap();
-        assert_eq!(exists, false);
+        assert!(!exists);
 
         // Verify blocks were cleaned up
         let block_tree = fs.user_meta_store.get_block_tree().unwrap();
@@ -720,7 +720,7 @@ mod tests {
         }
         // Verify paths were cleaned up
         for path in stored_paths {
-            assert_eq!(fs.path_tree().unwrap().contains_key(&path).unwrap(), false);
+            assert!(!fs.path_tree().unwrap().contains_key(&path).unwrap());
         }
     }
 

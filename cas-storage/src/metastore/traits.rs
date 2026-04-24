@@ -53,6 +53,14 @@ pub trait BaseMetaTree: Send + Sync {
     /// * `Result<usize, MetaError>` - The number of entries or an error
     #[cfg(test)]
     fn len(&self) -> Result<usize, MetaError>;
+
+    /// Returns true if the tree contains no key-value pairs.
+    ///
+    /// This method is only available in test builds.
+    #[cfg(test)]
+    fn is_empty(&self) -> Result<bool, MetaError> {
+        self.len().map(|n| n == 0)
+    }
 }
 
 /// Type alias for a boxed iterator over key-value pairs.

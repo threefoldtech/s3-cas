@@ -420,6 +420,11 @@ impl BlockTree {
         self.tree.len()
     }
 
+    #[cfg(test)]
+    pub fn is_empty(&self) -> Result<bool, MetaError> {
+        self.len().map(|n| n == 0)
+    }
+
     /// Removes a block from the tree.
     ///
     /// # Arguments
@@ -461,25 +466,22 @@ impl BlockTree {
     pub fn iter_all(&self) -> Box<dyn Iterator<Item = Result<(BlockID, Block), MetaError>> + '_> {
         use crate::metastore::block::BLOCKID_SIZE;
 
-        Box::new(self.tree.iter_all().filter_map(|result| {
-            match result {
-                Ok((key, value)) => {
-                    // Parse the block ID from the key
-                    let block_id: BlockID = if key.len() >= BLOCKID_SIZE {
-                        let mut id = [0u8; BLOCKID_SIZE];
-                        id.copy_from_slice(&key[..BLOCKID_SIZE]);
-                        id
-                    } else {
-                        return Some(Err(MetaError::OtherDBError("Malformed block key".to_string())));
-                    };
-                    // Deserialize the block
-                    match Block::try_from(&*value) {
-                        Ok(block) => Some(Ok((block_id, block))),
-                        Err(e) => Some(Err(MetaError::OtherDBError(e.to_string()))),
-                    }
-                }
-                Err(e) => Some(Err(e)),
+        Box::new(self.tree.iter_all().map(|result| match result {
+            Ok((key, value)) => {
+                // Parse the block ID from the key
+                let block_id: BlockID = if key.len() >= BLOCKID_SIZE {
+                    let mut id = [0u8; BLOCKID_SIZE];
+                    id.copy_from_slice(&key[..BLOCKID_SIZE]);
+                    id
+                } else {
+                    return Err(MetaError::OtherDBError("Malformed block key".to_string()));
+                };
+                // Deserialize the block
+                Block::try_from(&*value)
+                    .map(|block| (block_id, block))
+                    .map_err(|e| MetaError::OtherDBError(e.to_string()))
             }
+            Err(e) => Err(e),
         }))
     }
 }
@@ -554,7 +556,7 @@ impl Transaction {
                     block.increment_refcount();
                     let new_rc = block.rc();
                     tracing::debug!(
-                        block_hash = %hex::encode(&block_hash),
+                        block_hash = %hex::encode(block_hash),
                         old_rc = old_rc,
                         new_rc = new_rc,
                         key_has_block = key_has_block,
@@ -564,7 +566,7 @@ impl Transaction {
                         .insert(DEFAULT_BLOCK_TREE, &block_hash, block.to_vec())?;
                 } else {
                     tracing::debug!(
-                        block_hash = %hex::encode(&block_hash),
+                        block_hash = %hex::encode(block_hash),
                         rc = block.rc(),
                         key_has_block = key_has_block,
                         "Block exists: NOT incrementing (key already has it)"
@@ -595,7 +597,7 @@ impl Transaction {
                 let block = Block::new(data_len, block_hash[..idx].to_vec());
 
                 tracing::debug!(
-                    block_hash = %hex::encode(&block_hash),
+                    block_hash = %hex::encode(block_hash),
                     rc = block.rc(),
                     data_len = data_len,
                     key_has_block = key_has_block,

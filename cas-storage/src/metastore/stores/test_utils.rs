@@ -30,7 +30,6 @@ pub fn test_get_bucket_keys(store: &impl TestStore) {
 
     let retrieved_keys: Vec<String> = bucket
         .iter_all()
-        .into_iter()
         .map(|kv| String::from_utf8(kv.unwrap().0).unwrap())
         .collect();
 

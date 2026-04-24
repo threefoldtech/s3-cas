@@ -1,4 +1,4 @@
-use std::io::{self, ErrorKind};
+use std::io::{self};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -86,9 +86,9 @@ impl S3 for S3FS {
             ..
         } = req.input;
 
-        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
-        tracing::Span::current().record("key", &tracing::field::display(&key));
-        tracing::Span::current().record("upload_id", &tracing::field::display(&upload_id));
+        tracing::Span::current().record("bucket", tracing::field::display(&bucket));
+        tracing::Span::current().record("key", tracing::field::display(&key));
+        tracing::Span::current().record("upload_id", tracing::field::display(&upload_id));
 
         tracing::debug!(
             bucket = %bucket,
@@ -113,8 +113,7 @@ impl S3 for S3FS {
                 .ok_or_else(|| { io::Error::new(io::ErrorKind::NotFound, "Missing part_number") }));
             cnt = cnt.wrapping_add(1);
             if part_number != cnt {
-                try_!(Err(io::Error::new(
-                    io::ErrorKind::Other,
+                try_!(Err(io::Error::other(
                     "InvalidPartOrder"
                 )));
             }
@@ -291,8 +290,8 @@ impl S3 for S3FS {
     ) -> S3Result<S3Response<DeleteObjectOutput>> {
         let DeleteObjectInput { bucket, key, .. } = req.input;
 
-        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
-        tracing::Span::current().record("key", &tracing::field::display(&key));
+        tracing::Span::current().record("bucket", tracing::field::display(&bucket));
+        tracing::Span::current().record("key", tracing::field::display(&key));
 
         tracing::debug!(bucket = %bucket, key = %key, "Delete object");
 
@@ -379,8 +378,8 @@ impl S3 for S3FS {
             bucket, key, range, ..
         } = req.input;
 
-        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
-        tracing::Span::current().record("key", &tracing::field::display(&key));
+        tracing::Span::current().record("bucket", tracing::field::display(&bucket));
+        tracing::Span::current().record("key", tracing::field::display(&key));
 
         tracing::debug!(bucket = %bucket, key = %key, "Get object");
 
@@ -657,8 +656,8 @@ impl S3 for S3FS {
     ) -> S3Result<S3Response<PutObjectOutput>> {
         let input = req.input;
 
-        tracing::Span::current().record("bucket", &tracing::field::display(&input.bucket));
-        tracing::Span::current().record("key", &tracing::field::display(&input.key));
+        tracing::Span::current().record("bucket", tracing::field::display(&input.bucket));
+        tracing::Span::current().record("key", tracing::field::display(&input.key));
 
         tracing::debug!(bucket = %input.bucket, key = %input.key, "Put object");
         if let Some(ref storage_class) = input.storage_class {
@@ -740,9 +739,9 @@ impl S3 for S3FS {
             ..
         } = req.input;
 
-        tracing::Span::current().record("bucket", &tracing::field::display(&bucket));
-        tracing::Span::current().record("key", &tracing::field::display(&key));
-        tracing::Span::current().record("upload_id", &tracing::field::display(&upload_id));
+        tracing::Span::current().record("bucket", tracing::field::display(&bucket));
+        tracing::Span::current().record("key", tracing::field::display(&key));
+        tracing::Span::current().record("upload_id", tracing::field::display(&upload_id));
         tracing::Span::current().record("part_number", part_number);
 
         tracing::debug!(
@@ -812,7 +811,7 @@ impl S3 for S3FS {
 
 // Add helper function
 fn convert_stream_error(body: StreamingBlob) -> impl Stream<Item = Result<Bytes, io::Error>> {
-    body.map(|r| r.map_err(|e| io::Error::new(ErrorKind::Other, e.to_string())))
+    body.map(|r| r.map_err(|e| io::Error::other(e.to_string())))
 }
 
 fn decode_continuation_token(rt: Option<&str>) -> Result<Option<String>, s3s::S3Error> {
