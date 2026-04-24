@@ -3,7 +3,7 @@ members = ["cas-storage", "s3-cas"]
 resolver = "2"
 
 [workspace.package]
-edition = "2018"
+edition = "2024"
 authors = ["Lee Smet <lee.smet@hotmail.com>"]
 
 [workspace.dependencies]

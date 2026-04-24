@@ -27,12 +27,11 @@ fn detect_user_ids(meta_root: &Path) -> Result<Vec<String>> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if let Some(id) = name.strip_prefix("user_") {
-                    user_ids.push(id.to_string());
-                }
-            }
+        if path.is_dir()
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && let Some(id) = name.strip_prefix("user_")
+        {
+            user_ids.push(id.to_string());
         }
     }
     Ok(user_ids)
@@ -335,10 +334,10 @@ pub fn object_info(
             println!("  ... ({} more blocks)", blocks.len() - show);
         }
 
-        if let ObjectType::Multipart = obj.object_type() {
-            if let ObjectData::MultiPart { parts, .. } = obj.data() {
-                println!("\nMultipart upload: {} parts", parts);
-            }
+        if let ObjectType::Multipart = obj.object_type()
+            && let ObjectData::MultiPart { parts, .. } = obj.data()
+        {
+            println!("\nMultipart upload: {} parts", parts);
         }
     }
     Ok(())

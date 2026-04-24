@@ -31,7 +31,7 @@ impl RangeRequest {
 // TODO: replace with a parse impl on RangeRequest
 /// Parse a range request.
 pub fn parse_range_request(input: &Option<String>) -> RangeRequest {
-    if let Some(ref input) = input {
+    if let Some(input) = input {
         if !input.starts_with("bytes=") {
             eprintln!("Invalid range input \"{input}\"");
             return RangeRequest::All;

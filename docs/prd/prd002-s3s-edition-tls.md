@@ -133,7 +133,26 @@ Not assigned. ADR-005 sets 2026-07-24 as the fallback point:
 if upstream `s3s` shows no AFIT migration by then, fall through to
 option A2.
 
-## 5. Deliverable B: Rust edition bump
+## 5. Deliverable B: Rust edition bump  (shipped 2026-04-25)
+
+Bump landed in commit-to-be-named on 2026-04-25. Workspace moved
+from `edition = "2018"` to `edition = "2024"`. Callouts from the
+bump:
+
+- `cas-storage/src/cas/range_request.rs`: edition 2024 outlaws
+  `if let Some(ref input) = input` when the scrutinee is already
+  a reference; fixed to `if let Some(input) = input`.
+- `cas-storage/src/cas/block_stream.rs`, `s3-cas/src/inspect.rs`:
+  let-chains are now stable in edition 2024; three nested
+  `if let ... { if let ... { ... } }` blocks collapsed to
+  `if ... && let ... && let ... { ... }` per clippy.
+
+22 tests unchanged (15 cas-storage lib + 7 s3-cas lib + 5 s3-cas
+integration). Clippy clean.
+
+Original target specification follows.
+
+
 
 ### 5.1 Target state
 
