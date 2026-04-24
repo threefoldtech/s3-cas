@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{convert::TryFrom, sync::Mutex};
@@ -350,7 +349,7 @@ impl MetaTreeExt for FjallTree {
         let skip_filtered = if let (Some(_), Some(ctsa)) = (&prefix, ctsa) {
             let ctsa_bytes = ctsa.into_bytes();
             Box::new(
-                filtered.skip_while(move |(raw_key, _)| raw_key.deref() <= ctsa_bytes.as_slice()),
+                filtered.skip_while(move |(raw_key, _)| &**raw_key <= ctsa_bytes.as_slice()),
             ) as Box<dyn Iterator<Item = _>>
         } else {
             Box::new(filtered)
