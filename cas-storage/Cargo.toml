@@ -8,7 +8,6 @@ description = "Content-addressable storage library with block-level deduplicatio
 [dependencies]
 # Core async runtime
 tokio.workspace = true
-async-trait.workspace = true
 async-fs.workspace = true
 futures.workspace = true
 
