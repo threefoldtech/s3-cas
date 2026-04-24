@@ -124,10 +124,7 @@ pub(super) async fn store_object(
             //
             // IMPORTANT: In multi-user mode, use shared MetaStore for block transactions
             // to ensure blocks are written to the shared _BLOCKS tree, not user-specific tree
-            let mut store_tx = match &fs.shared_meta_store {
-                Some(shared_store) => shared_store.begin_transaction(),
-                None => fs.user_meta_store.begin_transaction(),
-            };
+            let mut store_tx = fs.shared.meta_store().begin_transaction();
             let write_meta_result = store_tx.write_block(block_hash, data_len, key_has_block);
 
             let mut pm = PendingMarker::new(fs.metrics.clone());
@@ -173,17 +170,11 @@ pub(super) async fn store_object(
                 // Since we just added it with rc=1, we can just delete it.
                 // We accept potential data leakage here if this cleanup fails,
                 // as per the design principles (leakage is better than data loss).
-                let block_tree = match &fs.shared_meta_store {
-                    Some(shared_store) => shared_store.get_block_tree(),
-                    None => fs.user_meta_store.get_block_tree(),
-                };
-
-                if let Ok(tree) = block_tree {
-                    if let Err(e) = tree.remove(&block_hash) {
-                        tracing::warn!(block = %hex_string(&block_hash), error = %e, "Failed to cleanup orphan block metadata");
-                    } else {
-                        tracing::debug!(block = %hex_string(&block_hash), "Cleaned up orphan block metadata");
-                    }
+                let tree = fs.shared.block_tree();
+                if let Err(e) = tree.remove(&block_hash) {
+                    tracing::warn!(block = %hex_string(&block_hash), error = %e, "Failed to cleanup orphan block metadata");
+                } else {
+                    tracing::debug!(block = %hex_string(&block_hash), "Cleaned up orphan block metadata");
                 }
             };
 

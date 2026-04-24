@@ -80,14 +80,15 @@ static CONFIG: Lazy<SdkConfig> = Lazy::new(|| {
         .cloned()
         .unwrap_or(cas_storage::StorageEngine::Fjall);
     let inlined_size = CONFIG_SIZE.lock().unwrap().or(Some(1));
-    let casfs = cas_storage::CasFS::new(
+    let casfs = cas_storage::CasFS::single_namespace(
         FS_ROOT.into(),
         FS_ROOT.into(),
         metrics.to_cas_metrics(),
         storage_engine,
         inlined_size,
         None,
-    );
+    )
+    .expect("open CasFS");
     let s3fs = s3_cas::s3fs::S3FS::new(Arc::new(casfs), metrics.clone());
 
     // Setup S3 service

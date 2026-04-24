@@ -7,7 +7,8 @@ use crate::metastore::MetaError;
 pub(super) async fn delete_object(fs: &CasFS, bucket: &str, key: &str) -> Result<(), MetaError> {
     let path_map = fs.path_tree()?;
 
-    let blocks_to_delete = fs.user_meta_store.delete_object(bucket, key)?;
+    let block_tree = fs.shared.block_tree();
+    let blocks_to_delete = fs.namespace.delete_object(bucket, key, &block_tree)?;
 
     tracing::Span::current().record("blocks_deleted", blocks_to_delete.len());
 
@@ -29,10 +30,10 @@ pub(super) async fn delete_object(fs: &CasFS, bucket: &str, key: &str) -> Result
 
 #[tracing::instrument(skip(fs), fields(bucket = %bucket_name, objects_deleted))]
 pub(super) async fn bucket_delete(fs: &CasFS, bucket_name: &str) -> Result<(), MetaError> {
-    let bmt = fs.user_meta_store.get_allbuckets_tree()?;
+    let bmt = fs.namespace.get_allbuckets_tree()?;
     bmt.remove(bucket_name.as_bytes())?;
 
-    let bucket = fs.user_meta_store.get_bucket_ext(bucket_name)?;
+    let bucket = fs.namespace.get_bucket_ext(bucket_name)?;
     let mut object_count = 0;
     for key_val in bucket.iter_all() {
         let (key, _) = key_val?;
@@ -47,6 +48,6 @@ pub(super) async fn bucket_delete(fs: &CasFS, bucket_name: &str) -> Result<(), M
 
     tracing::Span::current().record("objects_deleted", object_count);
 
-    fs.user_meta_store.drop_bucket(bucket_name)?;
+    fs.namespace.drop_bucket(bucket_name)?;
     Ok(())
 }

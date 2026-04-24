@@ -12,38 +12,27 @@
 //! - **Inline Data**: Small objects can be stored directly in metadata
 //! - **Streaming I/O**: Efficient streaming reads and writes
 //!
-//! ## Example: Single-User Storage
+//! ## Example: Single-namespace convenience
 //!
 //! ```no_run
 //! use cas_storage::{CasFS, StorageEngine, Durability};
 //! use std::path::PathBuf;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create storage instance
-//! let casfs = CasFS::new(
-//!     PathBuf::from("./data/blocks"),
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let casfs = CasFS::single_namespace(
+//!     PathBuf::from("./data"),
 //!     PathBuf::from("./data/meta"),
 //!     Default::default(),  // metrics
 //!     StorageEngine::Fjall,
-//!     None,  // inline_metadata_size
+//!     None,                // inlined_metadata_size
 //!     Some(Durability::Fsync),
-//! );
-//!
-//! // Create bucket
+//! )?;
 //! casfs.create_bucket("my-bucket")?;
-//!
-//! // Store object
-//! // let data_stream = ...; // ByteStream
-//! // let object = casfs.store_single_object_and_meta(
-//! //     "my-bucket",
-//! //     "file.txt",
-//! //     data_stream,
-//! // ).await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! ## Example: Multi-User Storage
+//! ## Example: Multi-namespace (shared block store, many namespaces)
 //!
 //! ```no_run
 //! use cas_storage::{SharedBlockStore, CasFS, StorageEngine, Durability};
@@ -51,22 +40,19 @@
 //! use std::sync::Arc;
 //!
 //! # fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create shared block store (once)
+//! // Create shared block store (once, shared across all namespaces)
 //! let shared = Arc::new(SharedBlockStore::new(
-//!     PathBuf::from("./data/meta"),
+//!     PathBuf::from("./data/meta/blocks"),
 //!     StorageEngine::Fjall,
 //!     None,
 //!     Some(Durability::Fsync),
 //! )?);
 //!
-//! // Create per-user CasFS instances
-//! let user1_casfs = CasFS::new_multi_user(
-//!     PathBuf::from("./data/blocks"),
+//! // One CasFS per namespace (e.g. per user)
+//! let alice = CasFS::new(
+//!     PathBuf::from("./data"),
 //!     PathBuf::from("./data/meta/user_alice"),
-//!     shared.block_tree(),
-//!     shared.path_tree(),
-//!     shared.multipart_tree(),
-//!     shared.meta_store(),
+//!     shared.clone(),
 //!     Default::default(),
 //!     StorageEngine::Fjall,
 //!     None,

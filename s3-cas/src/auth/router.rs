@@ -77,13 +77,10 @@ impl UserRouter {
 
         let user_meta_path = self.meta_root.join(format!("user_{}", user_id));
 
-        let casfs = CasFS::new_multi_user(
+        let casfs = CasFS::new(
             self.fs_root.clone(),
             user_meta_path,
-            self.shared_block_store.block_tree(),
-            self.shared_block_store.path_tree(),
-            self.shared_block_store.multipart_tree(),
-            self.shared_block_store.meta_store(),
+            self.shared_block_store.clone(),
             self.metrics.to_cas_metrics(),
             self.storage_engine,
             self.inlined_metadata_size,

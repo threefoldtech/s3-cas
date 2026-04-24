@@ -6,7 +6,7 @@ pub(super) fn get_object_meta(
     bucket_name: &str,
     key: &str,
 ) -> Result<Option<Object>, MetaError> {
-    fs.user_meta_store.get_meta(bucket_name, key)
+    fs.namespace.get_meta(bucket_name, key)
 }
 
 pub(super) fn get_object_paths(

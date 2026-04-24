@@ -265,9 +265,19 @@ impl MetaStore {
     /// # Note
     /// This method currently handles reference counting and block management directly.
     /// In the future, these operations should be abstracted into a transaction system.
-    pub fn delete_object(&self, bucket: &str, key: &str) -> Result<Vec<Block>, MetaError> {
+    /// Delete an object from a bucket and decrement refcounts on its blocks.
+    ///
+    /// The bucket tree lives in this `MetaStore`; the block tree is passed
+    /// explicitly because in multi-namespace deployments it lives in a
+    /// separate `SharedBlockStore` (see `CasFS::new`). For single-namespace
+    /// use, pass `self.get_block_tree()?`.
+    pub fn delete_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        block_tree: &BlockTree,
+    ) -> Result<Vec<Block>, MetaError> {
         let bucket_tree = self.get_bucket_ext(bucket)?;
-        let block_tree = self.get_block_tree()?;
 
         // Get the object metadata
         let raw_object = match bucket_tree.get(key.as_bytes())? {

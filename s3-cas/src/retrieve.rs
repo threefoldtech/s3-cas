@@ -41,14 +41,14 @@ pub struct RetrieveConfig {
 pub async fn retrieve(args: RetrieveConfig) -> Result<()> {
     let storage_engine = args.metadata_db;
     let metrics = SharedMetrics::new();
-    let casfs = CasFS::new(
+    let casfs = CasFS::single_namespace(
         args.fs_root.clone(),
         args.meta_root.clone(),
         metrics.to_cas_metrics(),
         storage_engine,
         None,
         None,
-    );
+    )?;
 
     let (obj_meta, paths) = match casfs.get_object_paths(&args.bucket, &args.key)? {
         Some((obj, paths)) => (obj, paths),
