@@ -13,6 +13,14 @@ referred to by description until the day it gets written.
   -- baseline description of today's repo; lists currently-written
   PRDs and still-pending candidate work.
 
+## Review snapshot
+
+- [review-2026-04-25.md](review-2026-04-25.md) -- narrative of the
+  state of the repo at the 2026-04-25 wind-down: what landed,
+  what each recent PRD/ADR actually means, what is on the table
+  next, and the feel of the project. Not updated over time; use
+  for orientation, then trust the live docs.
+
 ## Active PRDs
 
 | ID      | Title                                                          | Status   |
