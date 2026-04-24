@@ -12,6 +12,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use cas_storage::{Durability, SharedBlockStore, StorageEngine};
 use s3_cas::auth::{UserRecord, UserRouter, UserStore};
 use s3_cas::check::{check_integrity, CheckConfig};
+use s3_cas::presign::{presign, PresignConfig};
 use s3_cas::retrieve::{retrieve, RetrieveConfig};
 use s3_cas::s3_wrapper::{DynamicS3Auth, S3UserRouter};
 
@@ -106,6 +107,9 @@ pub enum Command {
         #[command(subcommand)]
         command: UserCommand,
     },
+
+    /// Generate a SigV4 presigned URL for an object
+    Presign(PresignConfig),
 
     /// Start S3-cas server
     Server(ServerConfig),
@@ -238,6 +242,7 @@ fn main() -> Result<()> {
         }
         Command::Retrieve(config) => retrieve(config)?,
         Command::Check(config) => check_integrity(config)?,
+        Command::Presign(config) => presign(config)?,
         Command::User {
             meta_root,
             metadata_db,

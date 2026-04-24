@@ -56,6 +56,10 @@ rand = "0.8"
 
 # Metrics
 prometheus = { version = "0.13.4", features = ["process"] }
+aws-sigv4 = { version = "1.4.3", default-features = false, features = ["sign-http", "http1"] }
+aws-credential-types = "1.2.1"
+url = "2.5.8"
+humantime = "2.3.0"
 
 [dev-dependencies]
 s3s-aws = { git = "https://github.com/Nugine/s3s", package = "s3s-aws", tag = "v0.11.1" }

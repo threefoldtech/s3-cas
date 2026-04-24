@@ -5,6 +5,7 @@ pub mod auth;
 pub mod check;
 pub mod inspect;
 pub mod metrics;
+pub mod presign;
 pub mod retrieve;
 pub mod s3fs;
 pub mod s3_wrapper;
