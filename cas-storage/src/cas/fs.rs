@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{io, path::PathBuf};
 
+use super::async_fs::{AsyncFileSystem, RealAsyncFs};
 use super::multipart::MultiPart;
 use super::shared_block_store::SharedBlockStore;
 use crate::metrics::SharedMetrics;
@@ -14,29 +15,6 @@ use crate::metastore::{
 use rusoto_core::ByteStream;
 
 pub const BLOCK_SIZE: usize = 1 << 20; // Supposedly 1 MiB
-
-// Synchronous seam for the disk write path. Kept as a trait so the
-// on-disk write can be mocked in tests (see `test_store_object_write_failure`).
-// Was previously `#[async_trait]`; the methods were made sync in c5f9cc9 to
-// fix the Fjall deadlock (see docs/arch/deadlock-fix.md), and the macro was
-// dead decoration ever since. Stripped per ADR-004.
-pub(super) trait AsyncFileSystem: Send + Sync + std::fmt::Debug {
-    fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()>;
-    fn write(&self, path: &std::path::Path, contents: &[u8]) -> std::io::Result<()>;
-}
-
-#[derive(Debug)]
-struct RealAsyncFs;
-
-impl AsyncFileSystem for RealAsyncFs {
-    fn create_dir_all(&self, path: &std::path::Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(path)
-    }
-
-    fn write(&self, path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-        std::fs::write(path, contents)
-    }
-}
 
 pub struct CasFS {
     pub(super) async_fs: Box<dyn AsyncFileSystem>,

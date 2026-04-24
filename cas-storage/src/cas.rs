@@ -5,6 +5,7 @@ pub mod shared_block_store;
 pub use fs::CasFS;
 pub use fs::StorageEngine;
 pub use shared_block_store::SharedBlockStore;
+mod async_fs;
 mod buckets;
 mod buffered_byte_stream;
 mod delete_path;

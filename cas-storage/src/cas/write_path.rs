@@ -16,42 +16,57 @@ use super::fs::CasFS;
 use crate::metastore::{BlockID, MetaError, Object, ObjectData};
 use crate::metrics::SharedMetrics;
 
-pub(super) struct PendingMarker {
+/// RAII guard for a single in-flight block write.
+///
+/// Constructed via `new_pending`, which increments the `block_pending`
+/// metric. Exactly one terminal method -- `.written()` or `.failed()`
+/// -- must be called before the guard drops, or `Drop` reports the
+/// block as dropped. The compiler enforces this via `#[must_use]`.
+///
+/// The `ignored` case (block already exists, no disk write needed) is
+/// not modelled here on purpose -- just call `metrics.block_ignored()`
+/// directly, because there is no `Pending` state to transition from.
+///
+/// Owned (not borrowed) `SharedMetrics` so the guard can live across
+/// `.await` inside `store_object`'s per-chunk closure without borrow-
+/// checker gymnastics. `SharedMetrics` is `Arc`-backed, so this is
+/// just another refcount clone.
+#[must_use = "a BlockWriteGuard must be resolved with .written() or .failed()"]
+pub(super) struct BlockWriteGuard {
     metrics: SharedMetrics,
-    in_flight: u64,
+    state: GuardState,
 }
 
-impl PendingMarker {
-    pub fn new(metrics: SharedMetrics) -> Self {
+enum GuardState {
+    Pending,
+    Resolved,
+}
+
+impl BlockWriteGuard {
+    pub fn new_pending(metrics: SharedMetrics) -> Self {
+        metrics.block_pending();
         Self {
             metrics,
-            in_flight: 0,
+            state: GuardState::Pending,
         }
     }
 
-    pub fn block_pending(&mut self) {
-        self.metrics.block_pending();
-        self.in_flight += 1;
-    }
-
-    pub fn block_write_error(&mut self) {
-        self.metrics.block_write_error();
-        self.in_flight -= 1;
-    }
-
-    pub fn block_ignored(&mut self) {
-        self.metrics.block_ignored();
-    }
-
-    pub fn block_written(&mut self, _size: usize) {
+    pub fn written(mut self, _size: usize) {
+        self.state = GuardState::Resolved;
         self.metrics.block_written();
-        self.in_flight -= 1;
+    }
+
+    pub fn failed(mut self) {
+        self.state = GuardState::Resolved;
+        self.metrics.block_write_error();
     }
 }
 
-impl Drop for PendingMarker {
+impl Drop for BlockWriteGuard {
     fn drop(&mut self) {
-        self.metrics.blocks_dropped(self.in_flight)
+        if matches!(self.state, GuardState::Pending) {
+            self.metrics.blocks_dropped(1);
+        }
     }
 }
 
@@ -127,8 +142,6 @@ pub(super) async fn store_object(
             let mut store_tx = fs.shared.meta_store().begin_transaction();
             let write_meta_result = store_tx.write_block(block_hash, data_len, key_has_block);
 
-            let mut pm = PendingMarker::new(fs.metrics.clone());
-
             let block = match write_meta_result {
                 Err(e) => {
                     if let Err(e) = tx.unbounded_send(Err(e.into())) {
@@ -137,8 +150,9 @@ pub(super) async fn store_object(
                     return;
                 }
                 Ok((false, _)) => {
-                    // the block already exists, no need to write it to the storage
-                    pm.block_ignored();
+                    // the block already exists, no need to write it to the storage.
+                    // No guard: we never transitioned to Pending.
+                    fs.metrics.block_ignored();
 
                     tracing::debug!(target: "cas_storage::locks", "Committing metadata transaction (block exists)");
                     Box::new(store_tx).commit().unwrap();
@@ -149,9 +163,6 @@ pub(super) async fn store_object(
                     return;
                 }
                 Ok((true, block)) => {
-                    // the block does not exist, we need to write it to the storage
-                    pm.block_pending();
-
                     // COMMIT IMMEDIATELY to release lock
                     tracing::debug!(target: "cas_storage::locks", "Committing metadata transaction (new block)");
                     Box::new(store_tx).commit().unwrap();
@@ -159,6 +170,12 @@ pub(super) async fn store_object(
                     block
                 }
             };
+
+            // From here on we have a new block to write to disk. The
+            // guard tracks the Pending -> Written / Failed / Dropped
+            // transition; if we return without resolving it, Drop
+            // reports the block as dropped.
+            let guard = BlockWriteGuard::new_pending(fs.metrics.clone());
 
             // write the actual block to disk
             // if the disk operation fails, we must manually rollback (compensating transaction)
@@ -180,24 +197,22 @@ pub(super) async fn store_object(
 
             if let Err(e) = fs.async_fs.create_dir_all(block_path.parent().unwrap()) {
                 cleanup_on_failure();
-
                 if let Err(e) = tx.unbounded_send(Err(e)) {
-                    pm.block_write_error();
                     tracing::error!(error = %e, "Could not send path create error");
-                    return;
                 }
+                guard.failed();
+                return;
             }
             if let Err(e) = fs.async_fs.write(&block_path, &bytes) {
                 cleanup_on_failure();
-
                 if let Err(e) = tx.unbounded_send(Err(e)) {
-                    pm.block_write_error();
                     tracing::error!(error = %e, "Could not send block write error");
-                    return;
                 }
+                guard.failed();
+                return;
             }
 
-            pm.block_written(bytes.len());
+            guard.written(bytes.len());
 
             if let Err(e) = tx.unbounded_send(Ok((idx, block_hash))) {
                 tracing::error!(error = %e, "Could not send block id");
