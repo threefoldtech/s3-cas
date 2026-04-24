@@ -1,16 +1,16 @@
+use bytes::Bytes;
+use cas_storage::{AsyncByteStream, CasFS, Durability, StorageEngine};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use futures::stream;
 use once_cell::sync::Lazy;
 use rand::Rng;
-use rusoto_core::ByteStream;
-use s3_cas::cas::fs::{CasFS, StorageEngine};
-use s3_cas::metastore::Durability;
 use s3_cas::metrics::SharedMetrics;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
 // Create a single shared metrics instance to avoid registry conflicts
-static METRICS: Lazy<SharedMetrics> = Lazy::new(|| SharedMetrics::new());
+static METRICS: Lazy<SharedMetrics> = Lazy::new(SharedMetrics::new);
 
 fn get_shared_metrics() -> SharedMetrics {
     METRICS.clone()
@@ -24,27 +24,26 @@ fn setup_casfs() -> (CasFS, TempDir) {
 
     let metrics = get_shared_metrics();
     let storage_engine = StorageEngine::FjallNotx;
-    let inlined_metadata_size = Some(1024); // Use a reasonable inline metadata size for benchmarking
-    let durability = Some(Durability::Buffer); // Use buffer durability for benchmarking
+    let inlined_metadata_size = Some(1024);
+    let durability = Some(Durability::Buffer);
 
-    let fs = CasFS::new(
+    let fs = CasFS::single_namespace(
         root_path,
         meta_path,
-        metrics,
+        metrics.to_cas_metrics(),
         storage_engine,
         inlined_metadata_size,
         durability,
-    );
+    )
+    .expect("open CasFS");
 
     (fs, dir)
 }
 
-// Helper to create a test bucket
 fn create_test_bucket(fs: &CasFS, name: &str) {
     fs.create_bucket(name).unwrap();
 }
 
-// Helper to create random data of specified size
 fn create_random_data(size: usize) -> Vec<u8> {
     let mut rng = rand::thread_rng();
     let mut data = vec![0u8; size];
@@ -52,9 +51,8 @@ fn create_random_data(size: usize) -> Vec<u8> {
     data
 }
 
-// Convert Vec<u8> to ByteStream for store_single_object_and_meta
-fn vec_to_bytestream(data: Vec<u8>) -> ByteStream {
-    ByteStream::from(data)
+fn vec_to_bytestream(data: Vec<u8>) -> AsyncByteStream {
+    AsyncByteStream::new(stream::once(async move { Ok(Bytes::from(data)) }))
 }
 
 fn bench_store_methods(c: &mut Criterion) {
@@ -64,7 +62,6 @@ fn bench_store_methods(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
 
-    // Test with different data sizes
     let sizes = [128, 512, 1024, 4096, 8192, 16384];
 
     for &size in &sizes {
@@ -72,27 +69,27 @@ fn bench_store_methods(c: &mut Criterion) {
         let bucket_name = "test-bucket";
         create_test_bucket(&fs, bucket_name);
 
-        // Benchmark store_inlined_object
         group.bench_function(BenchmarkId::new("store_inlined_object", size), |b| {
             b.iter(|| {
                 let data = create_random_data(size);
-                let key = format!("inline-key-{}", rand::thread_rng().gen::<u32>());
+                let key = format!("inline-key-{}", rand::thread_rng().r#gen::<u32>());
                 black_box(fs.store_inlined_object(bucket_name, &key, data)).unwrap()
             })
         });
 
-        // Benchmark store_single_object_and_meta
         group.bench_function(
             BenchmarkId::new("store_single_object_and_meta", size),
             |b| {
                 b.iter(|| {
                     let data = create_random_data(size);
-                    let key = format!("single-key-{}", rand::thread_rng().gen::<u32>());
+                    let len = data.len();
+                    let key = format!("single-key-{}", rand::thread_rng().r#gen::<u32>());
                     let stream = vec_to_bytestream(data);
                     black_box(rt.block_on(fs.store_single_object_and_meta(
                         bucket_name,
                         &key,
                         stream,
+                        len,
                     )))
                     .unwrap()
                 })
@@ -112,10 +109,7 @@ fn bench_inlined_object_sizes(c: &mut Criterion) {
     let bucket_name = "test-bucket";
     create_test_bucket(&fs, bucket_name);
 
-    // Get the maximum inlined data length
     let max_inlined = fs.max_inlined_data_length();
-
-    // Test with different percentages of the max inline size
     let percentages = [25, 50, 75, 90];
 
     for &percentage in &percentages {
@@ -124,7 +118,7 @@ fn bench_inlined_object_sizes(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("percentage_of_max", percentage), |b| {
             b.iter(|| {
                 let data = create_random_data(size);
-                let key = format!("key-{}", rand::thread_rng().gen::<u32>());
+                let key = format!("key-{}", rand::thread_rng().r#gen::<u32>());
                 black_box(fs.store_inlined_object(bucket_name, &key, data)).unwrap()
             })
         });
@@ -140,30 +134,30 @@ fn bench_store_methods_overhead(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(100);
 
-    // Use a very small data size to measure overhead
     let size = 10; // 10 bytes
 
     let (fs, _dir) = setup_casfs();
     let bucket_name = "test-bucket";
     create_test_bucket(&fs, bucket_name);
 
-    // Benchmark store_inlined_object
     group.bench_function("store_inlined_object_overhead", |b| {
         b.iter(|| {
             let data = create_random_data(size);
-            let key = format!("inline-key-{}", rand::thread_rng().gen::<u32>());
+            let key = format!("inline-key-{}", rand::thread_rng().r#gen::<u32>());
             black_box(fs.store_inlined_object(bucket_name, &key, data)).unwrap()
         })
     });
 
-    // Benchmark store_single_object_and_meta
     group.bench_function("store_single_object_and_meta_overhead", |b| {
         b.iter(|| {
             let data = create_random_data(size);
-            let key = format!("single-key-{}", rand::thread_rng().gen::<u32>());
+            let len = data.len();
+            let key = format!("single-key-{}", rand::thread_rng().r#gen::<u32>());
             let stream = vec_to_bytestream(data);
-            black_box(rt.block_on(fs.store_single_object_and_meta(bucket_name, &key, stream)))
-                .unwrap()
+            black_box(rt.block_on(
+                fs.store_single_object_and_meta(bucket_name, &key, stream, len),
+            ))
+            .unwrap()
         })
     });
 
