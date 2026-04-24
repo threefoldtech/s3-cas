@@ -2,7 +2,7 @@
 
 Status:     Proposed - 2026-04-24
 Author:     Jan De Landtsheer
-Related:    docs/prd/prd000-current-state-and-restructure.md (PRD-006 note)
+Related:    docs/prd/prd000-current-state-and-restructure.md (PRD-002 note)
             docs/prd/prd001-cas-storage-internal-restructure.md
 
 ## Context
@@ -71,7 +71,7 @@ Two options exist and both are worse than waiting:
 
 The right time to remove it from the s3s-facing code is when s3s
 itself switches to native AFIT. That upgrade is tracked as part of
-PRD-006 ("edition bump, pin s3s to a crates.io release or an internal
+PRD-002 ("edition bump, pin s3s to a crates.io release or an internal
 mirror, rustls migration"); this ADR does not cover it.
 
 ## Migration rule
@@ -84,7 +84,7 @@ After this ADR lands, the rule for reviewers is:
 - **New code that implements an s3s trait:** use `async_trait`. That
   is a s3s constraint, not ours, and documenting it as a policy
   exception here keeps the trail clear.
-- **Existing s3s impls:** untouched until PRD-006 upgrades s3s.
+- **Existing s3s impls:** untouched until PRD-002 upgrades s3s.
 
 ## Consequences
 

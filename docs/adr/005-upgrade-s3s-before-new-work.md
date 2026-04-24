@@ -4,7 +4,7 @@ Status:      Proposed - 2026-04-24 - **Prerequisite: execute before any
              new feature work that touches the S3 surface.**
 Author:      Jan De Landtsheer
 Related:     docs/adr/004-drop-async-trait.md
-             docs/prd/prd000-current-state-and-restructure.md (PRD-006)
+             docs/prd/prd000-current-state-and-restructure.md (PRD-002)
              commit 7953e35 (the hand-rolled macro that motivates this)
 
 ## Context
@@ -96,8 +96,8 @@ plus the mental-overhead savings of not having hand-rolled
 - New wrappers around `s3s::S3` or `s3s::auth::S3Auth` beyond the
   existing two. Every new wrapper would re-pay the hand-rolled
   `Pin<Box<Future>>` cost.
-- PRD-005 (per-user metrics and quotas) if the implementation plan
-  involves another `MetricFs`-shaped wrapper.
+- The per-user metrics and quotas PRD (not yet written) if its
+  implementation plan involves another `MetricFs`-shaped wrapper.
 - Any change that touches `s3fs.rs`, `s3_wrapper.rs`, or
   `s3-cas/src/metrics.rs`'s `MetricFs` impl beyond bug fixes.
 
@@ -107,8 +107,8 @@ plus the mental-overhead savings of not having hand-rolled
   s3s surface.
 - Any work inside `cas-storage/`. `cas-storage` already has zero
   direct `async_trait` dependency after ADR-004; the only remaining
-  transitive path is through `rusoto_core::ByteStream`, which is
-  PRD-003's concern.
+  transitive path is through `rusoto_core::ByteStream`, which is the
+  ByteStream-removal PRD's concern (not yet written).
 - Docs, ADRs, dependency bumps that do not affect the S3 glue.
 - Bug fixes inside the existing S3 wrappers.
 
@@ -136,12 +136,10 @@ plus the mental-overhead savings of not having hand-rolled
 
 ### Neutral
 
-- Relationship to PRD-006: PRD-000 section 8 already names PRD-006 as
-  "upgrade to a current Rust edition, pin s3s to a crates.io release
-  or an internal mirror, execute ADR-002 rustls migration". This ADR
-  does not replace PRD-006; it promotes its s3s-upgrade clause to a
-  prerequisite. Write PRD-006 (or split the s3s clause out) when it
-  is time to execute.
+- Relationship to PRD-002: PRD-002 is the implementation plan that
+  executes this ADR's Deliverable A (s3s off async_trait) alongside
+  the edition bump and TLS stack consolidation. This ADR sets the
+  policy; PRD-002 does the work.
 - Relationship to ADR-002 (rustls): the s3s upgrade may or may not
   come with a TLS stack change. Handle them independently.
 

@@ -3,10 +3,15 @@
 One line per document, with status. Use this as the map. Last updated
 2026-04-24.
 
+Numbering rule: PRDs and ADRs are numbered at write-time, never
+pre-allocated, and never renumbered once assigned. Unwritten work is
+referred to by description until the day it gets written.
+
 ## Anchor
 
 - [prd/prd000-current-state-and-restructure.md](prd/prd000-current-state-and-restructure.md)
-  -- baseline description of today's repo; lists candidate spin-out PRDs.
+  -- baseline description of today's repo; lists currently-written
+  PRDs and still-pending candidate work.
 
 ## Active PRDs
 
@@ -14,16 +19,14 @@ One line per document, with status. Use this as the map. Last updated
 | ------- | -------------------------------------------------------------- | -------- |
 | PRD-000 | Current-state baseline and restructure                         | anchor   |
 | PRD-001 | cas-storage internal restructure (split fs.rs, unify CasFS)    | proposed |
-| PRD-006 | s3s upgrade, Rust edition bump, TLS stack consolidation        | draft    |
+| PRD-002 | s3s upgrade, Rust edition bump, TLS stack consolidation        | draft    |
 
-Candidates named in PRD-000 section 8 but not yet written:
+Pending candidate work, not yet written (take the next available
+number when written):
 
-- PRD-003 remove `rusoto_core::ByteStream` from the library surface
-- PRD-005 per-user metrics and quotas
-- PRD-008 expand integration tests and bring benches into CI
-
-(PRD-002, PRD-004, PRD-007 were collapsed into the simplify pass and
-will not be written as standalone PRDs.)
+- remove `rusoto_core::ByteStream` from the library surface
+- per-user metrics and quotas
+- expand integration tests and bring benches into CI
 
 ## Active ADRs
 
@@ -64,7 +67,7 @@ Frozen snapshots. Useful as context, not as current guidance.
 
 ## Conventions
 
-- PRDs and ADRs are numbered and never renumbered.
+- PRDs and ADRs are numbered at write-time only and never renumbered.
 - Superseded documents move to `docs/historical/` with a status header
   pointing at the successor.
 - Unicode glyphs are avoided in source files per repo convention (plain

@@ -7,7 +7,7 @@ The workspace has two crates: `cas-storage` (library) and `s3-cas`
 (application). All modules described under "What moves to library"
 moved. All modules described under "What stays in s3-cas" stayed.
 `rusoto_core::ByteStream` remains a library dependency; removing it
-is tracked as PRD-003.
+is tracked as the (not-yet-written) ByteStream-removal PRD.
 
 ---
 

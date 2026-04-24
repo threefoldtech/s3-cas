@@ -42,7 +42,8 @@ Out of scope (each has its own PRD or will get one):
 
 - Changing any refcount logic, transaction boundary, chunk size, or
   hash algorithm.
-- Removing `rusoto_core::ByteStream` from the public API (PRD-003).
+- Removing `rusoto_core::ByteStream` from the public API (the
+  ByteStream-removal PRD; not yet written).
 - Switching disk writes to `tokio::task::spawn_blocking` (noted as a
   followup in the deadlock postmortem).
 - Reintroducing intra-object concurrency in `store_object`.

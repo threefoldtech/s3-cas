@@ -20,8 +20,8 @@ features land in a coherent structure instead of accreting around organic
 hotspots.
 
 This PRD is intentionally descriptive before it is prescriptive. It freezes the
-"as-found" state as of 2026-04-24 so later PRDs (PRD-001, PRD-002, ...) can
-reference a stable baseline.
+"as-found" state as of 2026-04-24 so later PRDs can reference a
+stable baseline.
 
 ## 2. Background
 
@@ -347,27 +347,39 @@ docs/
 
 ## 8. Near-Term Restructure Work (candidate PRDs)
 
-Out of scope for this PRD (each gets its own):
+Numbering convention (revised 2026-04-24): PRDs are numbered at
+**write-time**, never pre-allocated. Only PRD-000 and PRD-001 carried
+numbers during the anchor draft because they were written alongside
+it. Everything else below is a candidate; it gets the next available
+number when someone writes it.
 
-- PRD-001: unify `CasFS` single- / multi-user construction;
+Currently written:
+
+- **PRD-001** -- unify `CasFS` single- / multi-user construction;
   retire optional shared trees; single-user as namespace `default`.
-- PRD-002: (collapsed into the baseline-simplify pass, see below) --
-  HTTP UI and single-user mode were deleted outright rather than
-  unified.
-- PRD-003: remove `rusoto_core::ByteStream` from the library surface;
-  define an internal stream abstraction.
-- PRD-004: (deferred, no longer urgent) persistent session store, CSRF,
-  login rate limiting. Reopens only if an HTTP admin UI is reintroduced.
-- PRD-005: per-user metrics and quotas.
-- PRD-006: upgrade to a current Rust edition, pin `s3s` to a crates.io
-  release or an internal mirror, execute ADR-002 rustls migration.
-- PRD-007: (partially done in the baseline-simplify pass, see below)
-  docs reorganisation; `users.toml` and `MULTIPART_TRACE.md` at the
-  repo root have been relocated. Remaining: `docs/INDEX.md`.
-- PRD-008: expand integration tests and bring benchmarks into CI.
+- **PRD-002** -- `s3s` upgrade, Rust edition bump, TLS stack
+  consolidation. Executes ADR-005 (prerequisite for new S3-surface
+  work) and ADR-002 (rustls migration). See
+  `docs/prd/prd002-s3s-edition-tls.md`.
 
-The ordering above is roughly dependency order, not schedule; PRDs do not
-block each other except where explicitly stated.
+Currently unwritten candidates (in rough dependency order, not
+schedule):
+
+- Remove `rusoto_core::ByteStream` from the library surface; define an
+  internal stream abstraction. Unblocks PRD-002's preferred TLS path.
+- Per-user metrics and quotas. Gated by ADR-005 if implementation adds
+  a new `s3s::S3` wrapper.
+- Expand integration tests and bring benchmarks into CI.
+
+Work originally envisioned here that was not written as a standalone
+PRD:
+
+- HTTP UI unification. Collapsed into the baseline-simplify pass
+  (2026-04-24); the UI was deleted outright.
+- Persistent session store + CSRF + login rate limiting. Deferred
+  indefinitely; reopens only if an HTTP admin UI is reintroduced.
+- Docs reorganisation. Mostly done in the baseline-simplify pass;
+  `docs/INDEX.md` exists now.
 
 ### Baseline simplify (2026-04-24, branch `simplify/drop-ui-and-single-user`)
 

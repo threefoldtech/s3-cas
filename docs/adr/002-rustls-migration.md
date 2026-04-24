@@ -13,9 +13,11 @@ Progress update (2026-04-24, after `simplify/drop-ui-and-single-user`):
   shows both `rustls` and `native-tls` present today.
 - The remaining work is to either (a) switch `rusoto_core` to its
   `rustls` feature or (b) drop the `rusoto_core` dependency entirely
-  by replacing `ByteStream` with a local stream abstraction (tracked
-  as PRD-003). Option (b) is preferred; this ADR becomes redundant if
-  PRD-003 lands first.
+  by replacing `ByteStream` with a local stream abstraction (the
+  ByteStream-removal PRD; not yet written). Option (b) is preferred;
+  this ADR becomes redundant if that PRD lands first. PRD-002's
+  Deliverable C will execute whichever path is available at the
+  time.
 
 Keep this ADR active until one of the two paths is taken.
 

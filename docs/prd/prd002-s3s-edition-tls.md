@@ -1,4 +1,4 @@
-# PRD-006: `s3s` upgrade, Rust edition bump, TLS stack consolidation
+# PRD-002: `s3s` upgrade, Rust edition bump, TLS stack consolidation
 
 Status:      Draft
 Author:      Jan De Landtsheer
@@ -34,9 +34,9 @@ In scope:
 Out of scope (has its own PRD or later work):
 
 - PRD-001 (cas-storage internal split) is independent.
-- PRD-003 (remove `rusoto_core::ByteStream` from the library) is
-  independent. If it lands first, Deliverable C's scope shrinks --
-  see section 5.4.
+- The ByteStream-removal PRD (remove `rusoto_core::ByteStream` from
+  the library; not yet written) is independent. If it lands first,
+  Deliverable C's scope shrinks -- see section 5.4.
 - Any user-visible feature change.
 - Any on-disk format change.
 
@@ -76,7 +76,7 @@ Out of scope (has its own PRD or later work):
   i.e. what commit `7953e35` wanted to write before E0195 forced the
   hand-roll.
 - `cargo tree -p s3-cas -e normal | grep async-trait` returns nothing
-  (modulo a transitive path via `rusoto_core`, which is PRD-003's
+  (modulo a transitive path via `rusoto_core`, which is the ByteStream-removal PRD's
   concern; see section 5.3).
 
 ### 4.2 Acquisition paths
@@ -194,14 +194,14 @@ After the `simplify/drop-ui-and-single-user` branch:
   `aws-config` and `aws-sdk-s3` in `s3-cas/[dev-dependencies]`.
   Smallest change. Keeps `rusoto_core::ByteStream` on the write
   path.
-- **C2** -- **preferred if PRD-003 lands first** -- PRD-003 replaces
+- **C2** -- **preferred if the ByteStream-removal PRD lands first** -- the ByteStream-removal PRD replaces
   `rusoto_core::ByteStream` with an internal stream abstraction,
   after which `rusoto_core` (and its native-tls path) can be
   dropped from `cas-storage` entirely. At that point Deliverable C
   becomes a one-line change in the dev-dependencies and this
   deliverable is mostly done for free.
 
-If PRD-003 lands before Deliverable C is executed, take path C2.
+If the ByteStream-removal PRD lands before Deliverable C is executed, take path C2.
 Otherwise path C1.
 
 ### 6.4 Verification
