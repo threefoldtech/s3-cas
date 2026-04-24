@@ -9,7 +9,7 @@ use md5::{Digest, Md5};
 use tracing;
 use uuid::Uuid;
 
-use rusoto_core::ByteStream;
+use cas_storage::AsyncByteStream;
 use s3s::dto::StreamingBlob;
 use s3s::dto::Timestamp;
 use s3s::dto::{
@@ -709,7 +709,7 @@ impl S3 for S3FS {
 
         // save the datadata
         let converted_stream = convert_stream_error(body);
-        let byte_stream = ByteStream::new_with_size(converted_stream, content_length);
+        let byte_stream = AsyncByteStream::new(converted_stream);
         let obj_meta = try_!(
             self.casfs
                 .store_single_object_and_meta(&bucket, &key, byte_stream, content_length)
@@ -764,7 +764,7 @@ impl S3 for S3FS {
         })?;
 
         let converted_stream = convert_stream_error(body);
-        let byte_stream = ByteStream::new_with_size(converted_stream, content_length as usize);
+        let byte_stream = AsyncByteStream::new(converted_stream);
 
         // we only store the object here, metadata is not stored in the meta store.
         // it is stored in the multipart metadata, in the `cas` layer.

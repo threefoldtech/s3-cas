@@ -79,7 +79,7 @@ pub use metastore::{
 // Re-export main types from cas
 pub use cas::{
     // Core storage
-    CasFS, SharedBlockStore, StorageEngine,
+    AsyncByteStream, CasFS, SharedBlockStore, StorageEngine,
     // Multipart support
     multipart::{MultiPart, MultiPartTree},
     // Streaming and utilities

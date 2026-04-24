@@ -20,11 +20,11 @@ referred to by description until the day it gets written.
 | PRD-000 | Current-state baseline and restructure                         | anchor   |
 | PRD-001 | cas-storage internal restructure (split fs.rs, unify CasFS)    | proposed |
 | PRD-002 | s3s upgrade, Rust edition bump, TLS stack consolidation        | draft    |
+| PRD-003 | Remove `rusoto_core::ByteStream` from the library surface      | draft    |
 
 Pending candidate work, not yet written (take the next available
 number when written):
 
-- remove `rusoto_core::ByteStream` from the library surface
 - per-user metrics and quotas
 - expand integration tests and bring benches into CI
 - HTTP exposure PRD: picks one of ADR-007 Options A / B / C with

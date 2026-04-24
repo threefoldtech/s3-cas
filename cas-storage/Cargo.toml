@@ -36,13 +36,6 @@ tracing.workspace = true
 # Time
 chrono.workspace = true
 
-# S3 types (for ByteStream). Default features pull hyper-tls -> native-tls
-# -> openssl; switch to rustls so the workspace stays OpenSSL-free.
-# We only use the ByteStream type, but rusoto_core still requires a TLS
-# backend to compile. Removing rusoto_core entirely is tracked as a
-# separate PRD.
-rusoto_core = { version = "0.48.0", default-features = false, features = ["rustls"] }
-
 # Encoding
 hex = "0.4.3"
 

@@ -9,9 +9,8 @@ use futures::{
     stream::{StreamExt, TryStreamExt},
 };
 use md5::{Digest, Md5};
-use rusoto_core::ByteStream;
-
 use super::buffered_byte_stream::BufferedByteStream;
+use super::byte_stream::AsyncByteStream;
 use super::fs::CasFS;
 use crate::metastore::{BlockID, MetaError, Object, ObjectData};
 use crate::metrics::SharedMetrics;
@@ -75,7 +74,7 @@ pub(super) async fn store_object(
     fs: &CasFS,
     bucket_name: &str,
     key: &str,
-    data: ByteStream,
+    data: AsyncByteStream,
 ) -> io::Result<(Vec<BlockID>, BlockID, u64)> {
     let old_obj_meta = match fs.get_object_meta(bucket_name, key) {
         Ok(Some(obj_meta)) => Some(obj_meta),
@@ -237,7 +236,7 @@ pub(super) async fn store_single_object_and_meta(
     fs: &CasFS,
     bucket_name: &str,
     key: &str,
-    data: ByteStream,
+    data: AsyncByteStream,
     len: usize,
 ) -> io::Result<Object> {
     let (blocks, content_hash, size) = if len > 0 {

@@ -12,7 +12,7 @@ use crate::metastore::{
     MetaError, MetaStore, MetaTreeExt, Object, ObjectData,
 };
 
-use rusoto_core::ByteStream;
+use super::byte_stream::AsyncByteStream;
 
 pub const BLOCK_SIZE: usize = 1 << 20; // Supposedly 1 MiB
 
@@ -292,7 +292,7 @@ impl CasFS {
         &self,
         bucket_name: &str,
         key: &str,
-        data: ByteStream,
+        data: AsyncByteStream,
         len: usize,
     ) -> io::Result<Object> {
         super::write_path::store_single_object_and_meta(self, bucket_name, key, data, len).await
@@ -309,7 +309,7 @@ impl CasFS {
         &self,
         bucket_name: &str,
         key: &str,
-        data: ByteStream,
+        data: AsyncByteStream,
     ) -> io::Result<(Vec<BlockID>, BlockID, u64)> {
         super::write_path::store_object(self, bucket_name, key, data).await
     }
@@ -331,7 +331,7 @@ mod tests {
     use bytes::Bytes;
     use futures::stream;
     use once_cell::sync::Lazy;
-    use rusoto_core::ByteStream;
+    use super::AsyncByteStream;
     use tempfile::tempdir;
 
     const TEST_ENGINES: [StorageEngine; 2] = [StorageEngine::Fjall, StorageEngine::FjallNotx];
@@ -417,7 +417,7 @@ mod tests {
         fs.create_bucket(bucket_name).unwrap();
 
         let test_data = b"test data".repeat(100);
-        let stream = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
+        let stream = AsyncByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         let result = fs.store_object(bucket_name, key, stream).await;
         assert!(result.is_err());
@@ -454,7 +454,7 @@ mod tests {
         let test_data = b"long test data".repeat(100).to_vec();
         let test_data_2 = test_data.clone();
         let test_data_len = test_data.len();
-        let stream = ByteStream::new(stream::once(
+        let stream = AsyncByteStream::new(stream::once(
             async move { Ok(Bytes::from(test_data.clone())) },
         ));
 
@@ -485,7 +485,7 @@ mod tests {
         // - The same block should be returned
         // - The refcount should be increased
 
-        let stream = ByteStream::new(stream::once(
+        let stream = AsyncByteStream::new(stream::once(
             async move { Ok(Bytes::from(test_data_2.clone())) },
         ));
 
@@ -542,7 +542,7 @@ mod tests {
         let test_data_len = test_data.len();
         let test_data_2 = test_data.clone();
         let test_data_3 = test_data.clone();
-        let stream = ByteStream::new(stream::once(
+        let stream = AsyncByteStream::new(stream::once(
             async move { Ok(Bytes::from(test_data.clone())) },
         ));
 
@@ -564,7 +564,7 @@ mod tests {
             // Refcount must not be increased
 
             let stream =
-                ByteStream::new(stream::once(
+                AsyncByteStream::new(stream::once(
                     async move { Ok(Bytes::from(test_data_2.clone())) },
                 ));
 
@@ -582,7 +582,7 @@ mod tests {
             // Test  using a new key
             // Refcount must be increased
             let stream =
-                ByteStream::new(stream::once(
+                AsyncByteStream::new(stream::once(
                     async move { Ok(Bytes::from(test_data_3.clone())) },
                 ));
 
@@ -619,7 +619,7 @@ mod tests {
         // Create test data and stream
         let test_data = b"test data".to_vec();
         let test_data_len = test_data.len();
-        let stream = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
+        let stream = AsyncByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store object
         let obj = fs
@@ -689,7 +689,7 @@ mod tests {
         let test_data = b"test data".to_vec();
         let test_data_len = test_data.len();
         let test_data2 = test_data.clone();
-        let stream1 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
+        let stream1 = AsyncByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store first object
         let obj1 = fs
@@ -705,7 +705,7 @@ mod tests {
 
         // Store same data with different key
 
-        let stream2 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
+        let stream2 = AsyncByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
 
         let obj2 = fs
             .store_single_object_and_meta(bucket, key2, stream2, test_data_len)
@@ -767,7 +767,7 @@ mod tests {
         let test_data = b"test data".to_vec();
         let test_data_len = test_data.len();
         let test_data2 = test_data.clone();
-        let stream1 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
+        let stream1 = AsyncByteStream::new(stream::once(async move { Ok(Bytes::from(test_data)) }));
 
         // Store first object
         let obj1 = fs
@@ -783,7 +783,7 @@ mod tests {
 
         // Store same data with same key
 
-        let stream2 = ByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
+        let stream2 = AsyncByteStream::new(stream::once(async move { Ok(Bytes::from(test_data2)) }));
 
         let obj2 = fs
             .store_single_object_and_meta(bucket, key1, stream2, test_data_len)
