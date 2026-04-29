@@ -9,7 +9,7 @@ const USERS_TREE: &str = "_USERS";
 const USERS_BY_S3_KEY_TREE: &str = "_USERS_BY_S3_KEY";
 
 /// User record stored in the database
-#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserRecord {
     /// Primary key - unique user identifier (e.g., "delandtj")
     pub user_id: String,
@@ -45,14 +45,14 @@ impl UserRecord {
     }
 
     pub fn to_vec(&self) -> Result<Vec<u8>, MetaError> {
-        bincode::encode_to_vec(self, bincode::config::standard())
+        serde_json::to_vec(self)
             .map_err(|e| MetaError::OtherDBError(format!("Failed to serialize UserRecord: {}", e)))
     }
 
     pub fn from_slice(data: &[u8]) -> Result<Self, MetaError> {
-        let (user, _len) = bincode::decode_from_slice(data, bincode::config::standard())
-            .map_err(|e| MetaError::OtherDBError(format!("Failed to deserialize UserRecord: {}", e)))?;
-        Ok(user)
+        serde_json::from_slice(data).map_err(|e| {
+            MetaError::OtherDBError(format!("Failed to deserialize UserRecord: {}", e))
+        })
     }
 }
 

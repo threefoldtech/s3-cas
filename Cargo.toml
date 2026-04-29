@@ -8,40 +8,39 @@ authors = ["Lee Smet <lee.smet@hotmail.com>"]
 
 [workspace.dependencies]
 # Core async runtime
-tokio = { version = "1", features = ["full"] }
-async-trait = "0.1"
-async-fs = "2.1"
-futures = "0.3"
+tokio = { version = "1.52", features = ["full"] }
+async-trait = "0.1.89"
+async-fs = "2.2"
+futures = "0.3.32"
 
 # Storage backend
-fjall = "2.11.2"
+fjall = "3.1"
 
 # Hashing and crypto
-md-5 = { version = "0.10.6" }
-faster-hex = "0.10.0"
+md-5 = { version = "0.11" }
+faster-hex = "0.10"
 
 # Data structures
-bytes = "1.7.1"
-uuid = { version = "1.12", features = ["v4"] }
+bytes = "1.11"
+uuid = { version = "1.23", features = ["v4"] }
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-bincode = "2.0.1"
-toml = "0.8"
+serde_json = "1.0.149"
+toml = "1.1"
 
 # Error handling
-anyhow = { version = "1.0.95" }
+anyhow = { version = "1.0.102" }
 
 # Logging and tracing
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 # Time
-chrono = "0.4"
+chrono = "0.4.44"
 
 # Utilities
-lazy_static = "1.5.0"
+lazy_static = "1.5"
 
 [profile.release]
 lto = true

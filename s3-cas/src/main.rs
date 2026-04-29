@@ -265,10 +265,10 @@ fn open_user_store(meta_root: PathBuf, engine: StorageEngine) -> Result<Arc<User
 }
 
 fn generate_random_string(length: usize, charset: &[u8]) -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::RngExt;
+    let mut rng = rand::rng();
     (0..length)
-        .map(|_| charset[rng.gen_range(0..charset.len())] as char)
+        .map(|_| charset[rng.random_range(0..charset.len())] as char)
         .collect()
 }
 

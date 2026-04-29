@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{convert::TryFrom, sync::Mutex};
 
-use fjall::{self, TxPartitionHandle};
+use fjall::{self, KeyspaceCreateOptions, Readable, SingleWriterTxKeyspace};
 
 use crate::metastore::{
     BaseMetaTree, Durability, KeyValuePairs, MetaError, MetaTreeExt, Object, Store, Transaction,
@@ -12,16 +12,16 @@ use crate::metastore::{
 
 #[derive(Clone)]
 pub struct FjallStore {
-    keyspace: Arc<fjall::TxKeyspace>,
+    db: Arc<fjall::SingleWriterTxDatabase>,
     inlined_metadata_size: usize,
     durability: fjall::PersistMode,
-    partition_cache: Arc<Mutex<HashMap<String, TxPartitionHandle>>>,
+    partition_cache: Arc<Mutex<HashMap<String, Arc<SingleWriterTxKeyspace>>>>,
 }
 
 impl std::fmt::Debug for FjallStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FjallStore")
-            .field("keyspace", &"<fjall::Keyspace>")
+            .field("db", &"<fjall::SingleWriterTxDatabase>")
             .finish()
     }
 }
@@ -36,7 +36,9 @@ impl FjallStore {
     ) -> Self {
         tracing::debug!("Opening fjall store at {:?}", path);
 
-        let tx_keyspace = fjall::Config::new(path).open_transactional().unwrap();
+        let db = fjall::SingleWriterTxDatabase::builder(&path)
+            .open()
+            .unwrap();
         let inlined_metadata_size = inlined_metadata_size.unwrap_or(DEFAULT_INLINED_METADATA_SIZE);
 
         let durability = durability.unwrap_or(Durability::Fdatasync);
@@ -47,36 +49,34 @@ impl FjallStore {
         };
 
         Self {
-            keyspace: Arc::new(tx_keyspace),
+            db: Arc::new(db),
             inlined_metadata_size,
             durability,
             partition_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    fn get_partition(&self, name: &str) -> Result<fjall::TxPartitionHandle, MetaError> {
+    fn get_partition(&self, name: &str) -> Result<Arc<SingleWriterTxKeyspace>, MetaError> {
         Ok(self
             .partition_cache
             .lock()
             .expect("Can lock partition cache")
             .entry(name.to_string())
-            .or_insert(
-                // match self.keyspace.open_partition(name, Default::default()) {
-                //     Ok(partition) => Ok(partition),
-                //     Err(e) => Err(MetaError::OtherDBError(e.to_string())),
-                // },
-                self.keyspace
-                    .open_partition(name, Default::default())
-                    .expect("Can open parition"),
-            )
+            .or_insert_with(|| {
+                Arc::new(
+                    self.db
+                        .keyspace(name, KeyspaceCreateOptions::default)
+                        .expect("Can open keyspace"),
+                )
+            })
             .clone())
     }
 
-    fn commit_persist(&self, tx: fjall::WriteTransaction) -> Result<(), MetaError> {
+    fn commit_persist(&self, tx: fjall::SingleWriterWriteTx) -> Result<(), MetaError> {
         tx.commit()
             .map_err(|e| MetaError::TransactionError(e.to_string()))?;
 
-        self.keyspace
+        self.db
             .persist(self.durability)
             .map_err(|e| MetaError::PersistError(e.to_string()))?;
         Ok(())
@@ -90,28 +90,31 @@ impl FjallStore {
 impl Store for FjallStore {
     fn tree_open(&self, name: &str) -> Result<Arc<dyn BaseMetaTree>, MetaError> {
         let partition = self.get_partition(name)?;
-        Ok(Arc::new(FjallTree::new(
-            self.keyspace.clone(),
-            Arc::new(partition),
-        )))
+        Ok(Arc::new(FjallTree::new(self.db.clone(), partition)))
     }
 
     fn tree_ext_open(&self, name: &str) -> Result<Arc<dyn MetaTreeExt + Send + Sync>, MetaError> {
         let partition = self.get_partition(name)?;
-        Ok(Arc::new(FjallTree::new(
-            self.keyspace.clone(),
-            Arc::new(partition),
-        )))
+        Ok(Arc::new(FjallTree::new(self.db.clone(), partition)))
     }
 
     fn tree_exists(&self, name: &str) -> Result<bool, MetaError> {
-        let exists = self.keyspace.partition_exists(name);
-        Ok(exists)
+        Ok(self.db.keyspace_exists(name))
     }
 
     fn tree_delete(&self, name: &str) -> Result<(), MetaError> {
         let partition = self.get_partition(name)?;
-        match self.keyspace.delete_partition(partition) {
+        // Drop the cached handle so the inner Arc count goes to 1 path below;
+        // delete_keyspace operates on a Keyspace handle by value.
+        self.partition_cache
+            .lock()
+            .expect("Can lock partition cache")
+            .remove(name);
+        match self
+            .db
+            .inner()
+            .delete_keyspace(partition.inner().clone())
+        {
             Ok(_) => Ok(()),
             Err(e) => Err(MetaError::OtherDBError(e.to_string())),
         }
@@ -122,9 +125,10 @@ impl Store for FjallStore {
         // Use unsafe to extend lifetime to 'static since the transaction
         // won't outlive the store
         let tx = unsafe {
-            std::mem::transmute::<fjall::WriteTransaction<'_>, fjall::WriteTransaction<'static>>(
-                self.keyspace.write_tx(),
-            )
+            std::mem::transmute::<
+                fjall::SingleWriterWriteTx<'_>,
+                fjall::SingleWriterWriteTx<'static>,
+            >(self.db.write_tx())
         };
 
         Transaction::new(Box::new(FjallTransaction::new(tx, Arc::new(self.clone()))))
@@ -136,17 +140,17 @@ impl Store for FjallStore {
     }
 
     fn disk_space(&self) -> u64 {
-        self.keyspace.disk_space()
+        self.db.disk_space().unwrap_or(0)
     }
 }
 
 pub struct FjallTransaction {
-    tx: Option<fjall::WriteTransaction<'static>>,
+    tx: Option<fjall::SingleWriterWriteTx<'static>>,
     store: Arc<FjallStore>,
 }
 
 impl FjallTransaction {
-    pub fn new(tx: fjall::WriteTransaction<'static>, store: Arc<FjallStore>) -> Self {
+    pub fn new(tx: fjall::SingleWriterWriteTx<'static>, store: Arc<FjallStore>) -> Self {
         Self {
             tx: Some(tx),
             store,
@@ -181,7 +185,7 @@ impl TransactionBackend for FjallTransaction {
     fn get(&mut self, tree_name: &str, key: &[u8]) -> Result<Option<Vec<u8>>, MetaError> {
         let partition = self.store.get_partition(tree_name)?;
         if let Some(ref mut tx) = self.tx {
-            match tx.get(&partition, key) {
+            match tx.get(&*partition, key) {
                 Ok(Some(data)) => Ok(Some(data.to_vec())),
                 Ok(None) => Ok(None),
                 Err(e) => Err(MetaError::OtherDBError(e.to_string())),
@@ -196,7 +200,7 @@ impl TransactionBackend for FjallTransaction {
     fn insert(&mut self, tree_name: &str, block_id: &[u8], data: Vec<u8>) -> Result<(), MetaError> {
         let partition = self.store.get_partition(tree_name)?;
         if let Some(ref mut tx) = self.tx {
-            tx.insert(&partition, block_id, data);
+            tx.insert(&*partition, block_id, data);
             Ok(())
         } else {
             Err(MetaError::TransactionError(
@@ -207,16 +211,16 @@ impl TransactionBackend for FjallTransaction {
 }
 
 pub struct FjallTree {
-    keyspace: Arc<fjall::TxKeyspace>,
-    partition: Arc<fjall::TxPartitionHandle>,
+    db: Arc<fjall::SingleWriterTxDatabase>,
+    partition: Arc<SingleWriterTxKeyspace>,
 }
 
 impl FjallTree {
-    pub fn new(keyspace: Arc<fjall::TxKeyspace>, partition: Arc<fjall::TxPartitionHandle>) -> Self {
-        Self {
-            keyspace,
-            partition,
-        }
+    pub fn new(
+        db: Arc<fjall::SingleWriterTxDatabase>,
+        partition: Arc<SingleWriterTxKeyspace>,
+    ) -> Self {
+        Self { db, partition }
     }
 
     fn get(&self, key: &[u8]) -> Result<Option<fjall::Slice>, MetaError> {
@@ -260,9 +264,9 @@ impl BaseMetaTree for FjallTree {
 
     #[cfg(test)]
     fn len(&self) -> Result<usize, MetaError> {
-        let read_tx = self.keyspace.read_tx();
+        let read_tx = self.db.read_tx();
         let len = read_tx
-            .len(&self.partition)
+            .len(&*self.partition)
             .map_err(|e| MetaError::OtherDBError(e.to_string()))?;
         Ok(len)
     }
@@ -271,11 +275,11 @@ impl BaseMetaTree for FjallTree {
 impl MetaTreeExt for FjallTree {
     fn iter_all(&self) -> KeyValuePairs {
         let partition = self.partition.clone();
-        let keyspace = self.keyspace.clone();
+        let db = self.db.clone();
         let mut last_key: Option<Vec<u8>> = None;
 
         Box::new(std::iter::from_fn(move || {
-            let read_tx = keyspace.read_tx();
+            let read_tx = db.read_tx();
             let range = match &last_key {
                 Some(k) => {
                     let mut next = k.clone();
@@ -286,9 +290,9 @@ impl MetaTreeExt for FjallTree {
             };
 
             read_tx
-                .range::<Vec<u8>, _>(&partition, range)
+                .range::<Vec<u8>, _>(&*partition, range)
                 .next()
-                .map(|res| match res {
+                .map(|guard| match guard.into_inner() {
                     Ok((k, v)) => {
                         last_key = Some(k.to_vec());
                         Ok((k.to_vec(), v.to_vec()))
@@ -321,11 +325,10 @@ impl MetaTreeExt for FjallTree {
             (None, start) => start,
         };
 
-        let read_tx = self.keyspace.read_tx();
+        let read_tx = self.db.read_tx();
 
-        let base_iter: Box<
-            dyn Iterator<Item = Result<(fjall::Slice, fjall::Slice), fjall::Error>>,
-        > = match (prefix.as_ref(), ctsa.as_ref()) {
+        let base_iter: Box<dyn Iterator<Item = fjall::Guard>> = match (prefix.as_ref(), ctsa.as_ref())
+        {
             (Some(prefix), Some(ctsa)) if (ctsa > prefix && !ctsa.starts_with(prefix)) => {
                 //Return empty iterator if ctsa is after prefix
                 Box::new(std::iter::empty())
@@ -333,26 +336,25 @@ impl MetaTreeExt for FjallTree {
             (Some(prefix), Some(ctsa_local)) if ctsa_local < prefix => {
                 // If ctsa is before prefix, ignore ctsa
                 ctsa = None;
-                Box::new(read_tx.prefix(&self.partition, prefix.as_bytes()))
+                Box::new(read_tx.prefix(&*self.partition, prefix.as_bytes()))
             }
-            (Some(prefix), _) => Box::new(read_tx.prefix(&self.partition, prefix.as_bytes())),
+            (Some(prefix), _) => Box::new(read_tx.prefix(&*self.partition, prefix.as_bytes())),
             (None, Some(ctsa)) => {
                 let mut next_key = ctsa.as_bytes().to_vec();
                 next_key.push(0);
-                Box::new(read_tx.range(&self.partition, next_key..))
+                Box::new(read_tx.range(&*self.partition, next_key..))
             }
-            (None, None) => Box::new(read_tx.range::<Vec<u8>, _>(&self.partition, ..)),
+            (None, None) => Box::new(read_tx.range::<Vec<u8>, _>(&*self.partition, ..)),
         };
 
-        let filtered = base_iter.filter_map(|res| res.ok());
+        let pairs = base_iter.filter_map(|g| g.into_inner().ok());
 
         let skip_filtered = if let (Some(_), Some(ctsa)) = (&prefix, ctsa) {
             let ctsa_bytes = ctsa.into_bytes();
-            Box::new(
-                filtered.skip_while(move |(raw_key, _)| &**raw_key <= ctsa_bytes.as_slice()),
-            ) as Box<dyn Iterator<Item = _>>
+            Box::new(pairs.skip_while(move |(raw_key, _)| &**raw_key <= ctsa_bytes.as_slice()))
+                as Box<dyn Iterator<Item = _>>
         } else {
-            Box::new(filtered)
+            Box::new(pairs)
         };
 
         Box::new(skip_filtered.map(|(raw_key, raw_value)| {

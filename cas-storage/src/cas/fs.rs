@@ -406,7 +406,8 @@ mod tests {
     #[tokio::test]
     async fn test_store_object_write_failure() {
         for engine in TEST_ENGINES {
-            let (fs, _dir) = setup_test_fs(engine).0.with_mock_fs();
+            let (fs, _dir) = setup_test_fs(engine);
+            let (fs, _mock) = fs.with_mock_fs();
             do_test_store_object_write_failure(fs).await;
         }
     }

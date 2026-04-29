@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fjall;
+use fjall::{self, KeyspaceCreateOptions};
 
 use crate::metastore::{
     BaseMetaTree, KeyValuePairs, MetaError, MetaTreeExt, Object, Store, Transaction,
@@ -11,14 +11,14 @@ use crate::metastore::{
 
 #[derive(Clone)]
 pub struct FjallStoreNotx {
-    keyspace: Arc<fjall::Keyspace>,
+    db: Arc<fjall::Database>,
     inlined_metadata_size: usize,
 }
 
 impl std::fmt::Debug for FjallStoreNotx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FjallStoreNotx")
-            .field("keyspace", &"<fjall::Keyspace>")
+            .field("db", &"<fjall::Database>")
             .finish()
     }
 }
@@ -27,18 +27,18 @@ impl FjallStoreNotx {
     pub fn new(path: PathBuf, inlined_metadata_size: Option<usize>) -> Self {
         tracing::debug!("Opening fjall store at {:?}", path);
 
-        let keyspace = fjall::Config::new(path).open().unwrap();
+        let db = fjall::Database::builder(&path).open().unwrap();
         // setting very low will practically disable it by default
         let inlined_metadata_size = inlined_metadata_size.unwrap_or(1);
 
         Self {
-            keyspace: Arc::new(keyspace),
+            db: Arc::new(db),
             inlined_metadata_size,
         }
     }
 
-    fn get_partition(&self, name: &str) -> Result<fjall::PartitionHandle, MetaError> {
-        match self.keyspace.open_partition(name, Default::default()) {
+    fn get_partition(&self, name: &str) -> Result<fjall::Keyspace, MetaError> {
+        match self.db.keyspace(name, KeyspaceCreateOptions::default) {
             Ok(partition) => Ok(partition),
             Err(e) => Err(MetaError::OtherDBError(e.to_string())),
         }
@@ -61,13 +61,12 @@ impl Store for FjallStoreNotx {
     }
 
     fn tree_exists(&self, name: &str) -> Result<bool, MetaError> {
-        let exists = self.keyspace.partition_exists(name);
-        Ok(exists)
+        Ok(self.db.keyspace_exists(name))
     }
 
     fn tree_delete(&self, name: &str) -> Result<(), MetaError> {
         let partition = self.get_partition(name)?;
-        match self.keyspace.delete_partition(partition) {
+        match self.db.delete_keyspace(partition) {
             Ok(_) => Ok(()),
             Err(e) => Err(MetaError::OtherDBError(e.to_string())),
         }
@@ -83,7 +82,7 @@ impl Store for FjallStoreNotx {
     }
 
     fn disk_space(&self) -> u64 {
-        self.keyspace.disk_space()
+        self.db.disk_space().unwrap_or(0)
     }
 }
 
@@ -140,11 +139,11 @@ impl TransactionBackend for FjallNoTransaction {
 }
 
 pub struct FjallTreeNotx {
-    partition: Arc<fjall::PartitionHandle>,
+    partition: Arc<fjall::Keyspace>,
 }
 
 impl FjallTreeNotx {
-    pub fn new(partition: Arc<fjall::PartitionHandle>) -> Self {
+    pub fn new(partition: Arc<fjall::Keyspace>) -> Self {
         Self { partition }
     }
 
@@ -215,7 +214,7 @@ impl MetaTreeExt for FjallTreeNotx {
             partition
                 .range::<Vec<u8>, _>(range)
                 .next()
-                .map(|res| match res {
+                .map(|guard| match guard.into_inner() {
                     Ok((k, v)) => {
                         last_key = Some(k.to_vec());
                         Ok((k.to_vec(), v.to_vec()))
@@ -250,9 +249,8 @@ impl MetaTreeExt for FjallTreeNotx {
 
         let partition = self.partition.clone();
 
-        let base_iter: Box<
-            dyn Iterator<Item = Result<(fjall::Slice, fjall::Slice), fjall::Error>>,
-        > = match (prefix.as_ref(), ctsa.as_ref()) {
+        let base_iter: Box<dyn Iterator<Item = fjall::Guard>> = match (prefix.as_ref(), ctsa.as_ref())
+        {
             (Some(prefix), Some(ctsa)) if (ctsa > prefix && !ctsa.starts_with(prefix)) => {
                 //Return empty iterator if ctsa is after prefix
                 Box::new(std::iter::empty())
@@ -271,15 +269,14 @@ impl MetaTreeExt for FjallTreeNotx {
             (None, None) => Box::new(partition.range::<Vec<u8>, _>(..)),
         };
 
-        let filtered = base_iter.filter_map(|res| res.ok());
+        let pairs = base_iter.filter_map(|g| g.into_inner().ok());
 
         let skip_filtered = if let (Some(_), Some(ctsa)) = (&prefix, ctsa) {
             let ctsa_bytes = ctsa.into_bytes();
-            Box::new(
-                filtered.skip_while(move |(raw_key, _)| &**raw_key <= ctsa_bytes.as_slice()),
-            ) as Box<dyn Iterator<Item = _>>
+            Box::new(pairs.skip_while(move |(raw_key, _)| &**raw_key <= ctsa_bytes.as_slice()))
+                as Box<dyn Iterator<Item = _>>
         } else {
-            Box::new(filtered)
+            Box::new(pairs)
         };
 
         Box::new(skip_filtered.map(|(raw_key, raw_value)| {
