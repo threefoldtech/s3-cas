@@ -424,7 +424,7 @@ async fn run_server(args: ServerConfig, service: s3s::service::S3Service) -> Res
     let listener = tokio::net::TcpListener::bind((args.host.as_str(), args.port)).await?;
     let local_addr = listener.local_addr()?;
 
-    let hyper_service = service.into_shared();
+    let hyper_service = service;
 
     let metrics_listener =
         tokio::net::TcpListener::bind((args.metric_host.as_str(), args.metric_port)).await?;

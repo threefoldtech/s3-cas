@@ -10,6 +10,7 @@ use tracing;
 use uuid::Uuid;
 
 use cas_storage::AsyncByteStream;
+use s3s::dto::ETag;
 use s3s::dto::StreamingBlob;
 use s3s::dto::Timestamp;
 use s3s::dto::{
@@ -202,7 +203,7 @@ impl S3 for S3FS {
         let output = CompleteMultipartUploadOutput {
             bucket: Some(bucket),
             key: Some(key),
-            e_tag: Some(object_meta.format_e_tag()),
+            e_tag: Some(ETag::Strong(object_meta.format_e_tag())),
             ..Default::default()
         };
         Ok(S3Response::new(output))
@@ -413,7 +414,7 @@ impl S3 for S3FS {
                 content_length: Some(stream_size as i64),
                 content_range: Some(fmt_content_range(0, stream_size - 1, stream_size)),
                 last_modified: Some(Timestamp::from(obj_meta.last_modified())),
-                e_tag: Some(obj_meta.format_e_tag()),
+                e_tag: Some(ETag::Strong(obj_meta.format_e_tag())),
                 ..Default::default()
             };
             return Ok(S3Response::new(output));
@@ -440,7 +441,7 @@ impl S3 for S3FS {
             content_range: Some(fmt_content_range(0, stream_size - 1, stream_size)),
             last_modified: Some(Timestamp::from(obj_meta.last_modified())),
             //metadata: object_metadata,
-            e_tag: Some(obj_meta.format_e_tag()),
+            e_tag: Some(ETag::Strong(obj_meta.format_e_tag())),
             ..Default::default()
         };
         Ok(S3Response::new(output))
@@ -539,7 +540,7 @@ impl S3 for S3FS {
             .range_filter(marker.clone(), prefix.clone(), None)
             .map(|(key, obj)| s3s::dto::Object {
                 key: Some(key),
-                e_tag: Some(obj.format_e_tag()),
+                e_tag: Some(ETag::Strong(obj.format_e_tag())),
                 last_modified: Some(obj.last_modified().into()),
                 owner: None,
                 size: Some(obj.size() as i64),
@@ -611,7 +612,7 @@ impl S3 for S3FS {
             )
             .map(|(key, obj)| s3s::dto::Object {
                 key: Some(key),
-                e_tag: Some(obj.format_e_tag()),
+                e_tag: Some(ETag::Strong(obj.format_e_tag())),
                 last_modified: Some(obj.last_modified().into()),
                 owner: None,
                 size: Some(obj.size() as i64),
@@ -701,7 +702,7 @@ impl S3 for S3FS {
             let obj_meta = try_!(self.casfs.store_inlined_object(&bucket, &key, data));
 
             let output = PutObjectOutput {
-                e_tag: Some(obj_meta.format_e_tag()),
+                e_tag: Some(ETag::Strong(obj_meta.format_e_tag())),
                 ..Default::default()
             };
             return Ok(S3Response::new(output));
@@ -717,7 +718,7 @@ impl S3 for S3FS {
         );
 
         let output = PutObjectOutput {
-            e_tag: Some(obj_meta.format_e_tag()),
+            e_tag: Some(ETag::Strong(obj_meta.format_e_tag())),
             ..Default::default()
         };
         Ok(S3Response::new(output))
@@ -799,7 +800,7 @@ impl S3 for S3FS {
             "Upload part completed"
         );
 
-        let e_tag = format!("\"{}\"", hex_string(&hash));
+        let e_tag = ETag::Strong(hex_string(&hash));
 
         let output = UploadPartOutput {
             e_tag: Some(e_tag),

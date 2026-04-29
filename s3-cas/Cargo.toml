@@ -29,7 +29,7 @@ md-5.workspace = true
 faster-hex.workspace = true
 
 # S3-specific dependencies
-s3s = { git = "https://github.com/Nugine/s3s", tag = "v0.11.1" }
+s3s = { git = "https://github.com/Nugine/s3s", rev = "12028c873ed1aad406a232ef2ac096c882e545bf" }
 
 # HTTP server (for /metrics endpoint only)
 hyper = { version = "1.9" }
@@ -58,7 +58,7 @@ url = "2.5"
 humantime = "2.3"
 
 [dev-dependencies]
-s3s-aws = { git = "https://github.com/Nugine/s3s", package = "s3s-aws", tag = "v0.11.1" }
+s3s-aws = { git = "https://github.com/Nugine/s3s", package = "s3s-aws", rev = "12028c873ed1aad406a232ef2ac096c882e545bf" }
 aws-config = { version = "1.8", default-features = false }
 aws-credential-types = { version = "1.2", features = ["test-util"] }
 aws-sdk-s3 = { version = "1.131", features = ["behavior-version-latest"] }

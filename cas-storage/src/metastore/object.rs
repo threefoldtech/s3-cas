@@ -149,10 +149,9 @@ impl Object {
     /// A formatted ETag string
     pub fn format_e_tag(&self) -> String {
         if let ObjectData::MultiPart { parts, .. } = &self.data {
-            format!("\"{}-{}\"", hex_string(&self.hash), parts)
+            format!("{}-{}", hex_string(&self.hash), parts)
         } else {
-            // Handle error case or provide default
-            format!("\"{}\"", hex_string(&self.hash))
+            hex_string(&self.hash)
         }
     }
 
