@@ -1,14 +1,14 @@
-# S3-CAS
+# QSS S3-CAS
 
 > Note: this is a continuation of Lee Smet's original
 > [s3-cas](https://github.com/leesmet/s3-cas), the foundational work on
 > content-addressable S3 storage.
 
-S3-CAS is an S3-compatible object storage server with a Content-Addressed Storage (CAS) backend. It provides Amazon S3 API compatibility while storing objects in a deduplicated, content-addressed manner. Existing S3-based applications can use it with minimal or no changes.
+QSS S3-CAS is an S3-compatible object storage server with a Content-Addressed Storage (CAS) backend. It provides Amazon S3 API compatibility while storing objects in a deduplicated, content-addressed manner. Existing S3-based applications can use it with minimal or no changes.
 
 ## What this is
 
-S3-CAS exposes a standard S3 API while internally deduplicating data blocks using MD5 hashing. Objects are split into blocks; identical blocks across different users and objects are stored only once. Reference counting ensures blocks are deleted only when no longer referenced by any object. Multi-user isolation is maintained at the bucket and object level while sharing block storage globally.
+QSS S3-CAS exposes a standard S3 API while internally deduplicating data blocks using MD5 hashing. Objects are split into blocks; identical blocks across different users and objects are stored only once. Reference counting ensures blocks are deleted only when no longer referenced by any object. Multi-user isolation is maintained at the bucket and object level while sharing block storage globally.
 
 ## What this repository contains
 
@@ -22,7 +22,7 @@ This build focuses on the S3 server plus the underlying CAS storage library. The
 
 ## Role in the stack
 
-S3-CAS functions as a storage gateway layer, providing standard S3 API access over a content-addressed storage backend. It can be used wherever S3 compatibility is required but storage efficiency and deduplication are desired. It fits alongside other storage components in the broader stack.
+QSS S3-CAS functions as a storage gateway layer, providing standard S3 API access over a content-addressed storage backend. It can be used wherever S3 compatibility is required but storage efficiency and deduplication are desired. It fits alongside other storage components in the broader stack.
 
 ## Relation to ThreeFold
 
