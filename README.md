@@ -35,7 +35,7 @@ This repository is owned and maintained by TF-Tech NV, a Belgian company respons
 ## Building
 
 ```bash
-git clone https://github.com/threefoldtech/s3-cas
+git clone https://github.com/threefoldtech/qss_s3_cas
 cd s3-cas
 cargo build --release
 ```
