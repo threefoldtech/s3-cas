@@ -4,21 +4,33 @@
 > [s3-cas](https://github.com/leesmet/s3-cas), the foundational work on
 > content-addressable S3 storage.
 
-## Features
+S3-CAS is an S3-compatible object storage server with a Content-Addressed Storage (CAS) backend. It provides Amazon S3 API compatibility while storing objects in a deduplicated, content-addressed manner. Existing S3-based applications can use it with minimal or no changes.
 
-- Content-addressable storage with automatic deduplication via MD5 hashing
-- Reference counting -- blocks are deleted when no longer referenced
-- Multi-user isolation with shared block-level dedup
-- CLI-managed users (S3 access/secret credentials per user)
-- Inline metadata for small objects
-- Two Fjall backends: `fjall` (transactional) and `fjall_notx`
+## What this is
 
-This build focuses on the S3 server plus the underlying CAS storage
-library. The previous HTTP browser UI, admin panel, and single-user
-mode have been removed on the `simplify/drop-ui-and-single-user`
-branch to reduce surface area; see
-[docs/prd/prd000-current-state-and-restructure.md](docs/prd/prd000-current-state-and-restructure.md)
-for the rationale and roadmap.
+S3-CAS exposes a standard S3 API while internally deduplicating data blocks using MD5 hashing. Objects are split into blocks; identical blocks across different users and objects are stored only once. Reference counting ensures blocks are deleted only when no longer referenced by any object. Multi-user isolation is maintained at the bucket and object level while sharing block storage globally.
+
+## What this repository contains
+
+- **`s3-cas server`** — An S3-compatible server with configurable durability, inline metadata, and Prometheus metrics
+- **User management CLI** — Commands to create, list, and delete users with S3 access/secret credentials
+- **Inspect tooling** — Commands to report on-disk state including users, buckets, blocks, and objects
+- **Presigned URL helper** — CLI tool to generate time-limited S3 URLs without requiring the AWS CLI
+- **Two Fjall backends**: `fjall` (transactional) and `fjall_notx`
+
+This build focuses on the S3 server plus the underlying CAS storage library. The previous HTTP browser UI, admin panel, and single-user mode have been removed on the `simplify/drop-ui-and-single-user` branch to reduce surface area; see [docs/prd/prd000-current-state-and-restructure.md](docs/prd/prd000-current-state-and-restructure.md) for the rationale and roadmap.
+
+## Role in the stack
+
+S3-CAS functions as a storage gateway layer, providing standard S3 API access over a content-addressed storage backend. It can be used wherever S3 compatibility is required but storage efficiency and deduplication are desired. It fits alongside other storage components in the broader stack.
+
+## Relation to ThreeFold
+
+This technology is used within the ThreeFold ecosystem and was first deployed on the ThreeFold Grid. The component itself is designed as reusable infrastructure technology and should be understood by its technical function first, independent of any specific deployment.
+
+## Ownership
+
+This repository is owned and maintained by TF-Tech NV, a Belgian company responsible for the development and maintenance of this technology.
 
 ## Building
 
@@ -30,8 +42,7 @@ cargo build --release
 
 ## Creating the first user
 
-The server refuses to start against an empty user database. Create a
-user first:
+The server refuses to start against an empty user database. Create a user first:
 
 ```bash
 s3-cas user --meta-root /tmp/s3/meta add alice --admin
@@ -61,14 +72,12 @@ s3-cas server \
   --meta-root=/tmp/s3/meta
 ```
 
-Each user's objects are isolated; users cannot list or access each
-other's buckets. Block-level dedup is global across users.
+Each user's objects are isolated; users cannot list or access each other's buckets. Block-level dedup is global across users.
 
 ## Storage backends
 
 - `fjall` (default) -- transactional LSM tree with ACID guarantees
-- `fjall_notx` -- non-transactional, faster, not recommended for
-  multi-user workloads
+- `fjall_notx` -- non-transactional, faster, not recommended for multi-user workloads
 
 ```bash
 --metadata-db fjall
@@ -85,8 +94,7 @@ other's buckets. Block-level dedup is global across users.
 
 ## Inline metadata
 
-Objects smaller than or equal to the configured threshold are stored
-directly in their metadata record, avoiding a separate block file.
+Objects smaller than or equal to the configured threshold are stored directly in their metadata record, avoiding a separate block file.
 
 ```bash
 --inline-metadata-size 4096
@@ -107,11 +115,7 @@ Access at `http://localhost:9100/metrics`.
 
 ## Presigned URLs
 
-Hand out a time-limited URL to a single object without needing the AWS
-CLI or `boto3` installed on the host. The subcommand reads the user's
-S3 credentials from the local `_USERS` partition and emits a standard
-AWS SigV4 query-string URL that any S3 client (curl included) will
-accept:
+Hand out a time-limited URL to a single object without needing the AWS CLI or `boto3` installed on the host. The subcommand reads the user's S3 credentials from the local `_USERS` partition and emits a standard AWS SigV4 query-string URL that any S3 client (curl included) will accept:
 
 ```bash
 s3-cas presign \
@@ -124,15 +128,11 @@ s3-cas presign \
 
 Prints one URL to stdout. Flags:
 
-- `--ttl <duration>` accepts `30s`, `15m`, `2h`, `1d`. Capped at
-  7 days (SigV4 limit).
+- `--ttl <duration>` accepts `30s`, `15m`, `2h`, `1d`. Capped at 7 days (SigV4 limit).
 - `--method <GET|PUT|HEAD|DELETE>` defaults to GET.
 - `--region <name>` defaults to `us-east-1`.
 
-The URL verifies server-side via the same SigV4 path a normal request
-uses; no server configuration or state is required. See
-[docs/adr/006-presigned-urls-and-cli-helper.md](docs/adr/006-presigned-urls-and-cli-helper.md)
-for the background.
+The URL verifies server-side via the same SigV4 path a normal request uses; no server configuration or state is required. See [docs/adr/006-presigned-urls-and-cli-helper.md](docs/adr/006-presigned-urls-and-cli-helper.md) for the background.
 
 ## Inspect subcommand
 
