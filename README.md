@@ -162,3 +162,8 @@ fs_root/
 - Only basic S3 API (no policies, ACLs, versioning, lifecycle rules)
 - Server-side copy between different instances is not implemented
 - Multipart uploads are not inlined even for small parts
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Copyright (c) TFTech NV.
